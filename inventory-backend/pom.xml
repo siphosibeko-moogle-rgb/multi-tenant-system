@@ -31,6 +31,32 @@
     <flyway.user>inventory_owner</flyway.user>
     <flyway.password>local_dev_only</flyway.password>
 
+    <!-- ===================================================================
+         THE single source of truth for the application role's password.
+
+         This literal must not appear anywhere else. Two independent Flyway
+         configurations consume it, and if they ever disagree, V2 creates
+         inventory_app with one password while the application connects with
+         another:
+
+           1. flyway-maven-plugin  <placeholders> below      (the CLI path)
+           2. Spring's Flyway      application-local.yml     (the app path)
+
+         application-local.yml reads it as @app.db.password@, which the Boot
+         parent's resource filtering substitutes at build time — so the two
+         cannot drift.
+
+         Overriding, in increasing precedence:
+           default below
+           DB_APP_PASSWORD environment variable  (see the profile at the end
+             of this file; Spring reads the same variable directly at runtime)
+           -Dapp.db.password=...  on the Maven command line
+
+         Local-only value. Production supplies DB_APP_PASSWORD and never
+         reaches this default — application-prod.yml has no fallback.
+         =================================================================== -->
+    <app.db.password>app_local_only</app.db.password>
+
     <jacoco.version>0.8.15</jacoco.version>
     <!-- M0 has no business logic, so any non-zero gate is either vacuous or an
          instant failure. The plugin is wired now so M1 only has to raise this. -->
@@ -171,6 +197,15 @@
           <locations>
             <location>filesystem:src/main/resources/db/migration</location>
           </locations>
+          <!-- Must mirror spring.flyway.placeholders.* in application-local.yml.
+               Without this, V2 fails to parse on an empty database with
+               'No value provided for placeholder: ${appUserPassword}'. The
+               failure is invisible until then: against an already-migrated
+               database Flyway never re-parses V2, so flyway:migrate reports
+               success and only a fresh volume exposes it. -->
+          <placeholders>
+            <appUserPassword>${app.db.password}</appUserPassword>
+          </placeholders>
         </configuration>
         <dependencies>
           <dependency>
@@ -231,4 +266,24 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!-- Lets DB_APP_PASSWORD drive the Maven side too, so the CLI path and the
+         Spring path honour the same environment variable. Spring reads it
+         directly (${DB_APP_PASSWORD:...} in application-local.yml); Maven has no
+         syntax for "environment variable with a default", hence this profile.
+         Activates automatically whenever the variable is present. A
+         -Dapp.db.password on the command line still wins over it. -->
+    <profile>
+      <id>app-db-password-from-env</id>
+      <activation>
+        <property>
+          <name>env.DB_APP_PASSWORD</name>
+        </property>
+      </activation>
+      <properties>
+        <app.db.password>${env.DB_APP_PASSWORD}</app.db.password>
+      </properties>
+    </profile>
+  </profiles>
 </project>

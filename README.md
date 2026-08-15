@@ -116,7 +116,7 @@ rather than silently pointing it somewhere wrong.
 | `POSTGRES_PORT` | `5432` | Host port for the container |
 | `DB_URL` | `jdbc:postgresql://localhost:5432/inventory` | JDBC URL |
 | `DB_APP_USER` | `inventory_app` | Application role — **must not be a superuser** |
-| `DB_APP_PASSWORD` | `app_local_only` | Application role password |
+| `DB_APP_PASSWORD` | `app_local_only` | Application role password — see below |
 | `DB_MIGRATION_USER` | `inventory_owner` | Role Flyway runs migrations as |
 | `DB_MIGRATION_PASSWORD` | `local_dev_only` | Migration role password |
 
@@ -131,6 +131,26 @@ This split is load-bearing, not decoration.
 - **`inventory_app`** is what the running application connects as.
   `V2__app_role.sql` creates it `NOSUPERUSER NOBYPASSRLS`, grants it DML, and then
   revokes `UPDATE` and `DELETE` on `stock_movements`.
+
+#### The application role's password has one source
+
+Two separate Flyway configurations create and then use that role — Spring's
+(`application-local.yml`) and the Maven plugin's (`pom.xml`, for
+`flyway:migrate` / `flyway:info`). If they disagree, `V2` creates the role with
+one password and the application connects with another.
+
+So the literal lives in exactly one place: the `<app.db.password>` property in
+`inventory-backend/pom.xml`. The plugin reads it directly; `application-local.yml`
+reads it as `@app.db.password@`, which Maven substitutes at build time. Override
+it either way — both consumers follow:
+
+```bash
+./mvnw flyway:migrate -Dapp.db.password=somethingelse   # Maven property
+DB_APP_PASSWORD=somethingelse ./mvnw flyway:migrate     # environment variable
+```
+
+Do not write the password into `application-local.yml`. A second copy is how the
+two drift apart.
 
 Pointing `DB_APP_USER` at the owner, or at any superuser or `BYPASSRLS` role,
 turns every row-level security policy in the schema into a no-op and removes
