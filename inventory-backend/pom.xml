@@ -23,6 +23,14 @@
     <java.version>21</java.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
+    <!-- Connection used by the flyway-maven-plugin only (`./mvnw flyway:info`),
+         never by the application. These are the same local-only defaults as
+         docker-compose.yml, and each is overridable: -Dflyway.url=... etc.
+         Migrations always run as the schema owner, never as the app role. -->
+    <flyway.url>jdbc:postgresql://localhost:5432/inventory</flyway.url>
+    <flyway.user>inventory_owner</flyway.user>
+    <flyway.password>local_dev_only</flyway.password>
+
     <jacoco.version>0.8.15</jacoco.version>
     <!-- M0 has no business logic, so any non-zero gate is either vacuous or an
          instant failure. The plugin is wired now so M1 only has to raise this. -->
@@ -66,9 +74,14 @@
       <scope>runtime</scope>
     </dependency>
 
+    <!-- Boot 4 split auto-configuration out of spring-boot-autoconfigure into
+         per-technology modules. org.flywaydb:flyway-core on its own gives you
+         the library but NOT FlywayAutoConfiguration, so migrations never run
+         and the failure is silent — the app just starts against an empty
+         schema. This starter pulls flyway-core plus spring-boot-flyway. -->
     <dependency>
-      <groupId>org.flywaydb</groupId>
-      <artifactId>flyway-core</artifactId>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
     </dependency>
     <!-- Flyway 10+ moved per-database support into separate modules. Without
          this, Flyway cannot resolve a PostgreSQL dialect at runtime. -->
@@ -142,6 +155,35 @@
             </path>
           </annotationProcessorPaths>
         </configuration>
+      </plugin>
+
+      <!-- Makes `./mvnw flyway:info` work, as documented in CLAUDE.md section 3.
+           The plugin runs outside Spring, so it needs the PostgreSQL module and
+           the driver on its own classpath — the application's dependencies are
+           not visible to it. Version comes from the Boot parent. -->
+      <plugin>
+        <groupId>org.flywaydb</groupId>
+        <artifactId>flyway-maven-plugin</artifactId>
+        <configuration>
+          <url>${flyway.url}</url>
+          <user>${flyway.user}</user>
+          <password>${flyway.password}</password>
+          <locations>
+            <location>filesystem:src/main/resources/db/migration</location>
+          </locations>
+        </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <version>${flyway.version}</version>
+          </dependency>
+          <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+          </dependency>
+        </dependencies>
       </plugin>
 
       <!-- Coverage gate for `./mvnw verify`. Threshold is 0.00 for M0 on
