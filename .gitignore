@@ -70,3 +70,8 @@ Thumbs.db
 *.log
 logs/
 tmp/
+
+# --- Claude Code local state ------------------------------------------------
+.claude/settings.local.json
+.claude/settings.local.json.tmp.*
+.claude/worktrees/
