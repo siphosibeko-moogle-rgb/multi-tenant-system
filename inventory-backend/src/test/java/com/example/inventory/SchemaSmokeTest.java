@@ -72,6 +72,31 @@ class SchemaSmokeTest extends AbstractIntegrationTest {
     }
 
     @Test
+    @DisplayName("migrations were applied by the schema owner, not the application role")
+    void migrationsWereAppliedByTheOwner() {
+        // flyway_schema_history.installed_by records the database user that ran
+        // each migration, which makes this directly checkable rather than a
+        // matter of trusting configuration.
+        //
+        // Verified empirically in FlywayBindingTest: Boot binds Flyway to the
+        // PRIMARY datasource unless spring.flyway.url/user/password are set. M0
+        // sets them, so migrations run as the owner. When M1 adds the RLS-bound
+        // application pool as a second datasource, this assertion is what catches
+        // it if that explicit binding is ever dropped.
+        List<String> installedBy = jdbc.queryForList(
+                "SELECT DISTINCT installed_by FROM flyway_schema_history", String.class);
+
+        assertThat(installedBy)
+                .as("migrations must never be applied by the RLS-bound application role")
+                .doesNotContain(APP_ROLE);
+
+        assertThat(installedBy)
+                .as("every migration should have been applied by one role: the owner")
+                .hasSize(1)
+                .doesNotContain(jdbc.queryForObject("SELECT current_user", String.class));
+    }
+
+    @Test
     @DisplayName("the baseline actually created the tenant-scoped tables")
     void baselineTablesExist() {
         Set<String> present = new HashSet<>(jdbc.queryForList(
