@@ -163,16 +163,29 @@ table has row-level security both **enabled** and **forced**, that each carries
 the `tenant_isolation` policy, that the application role is neither a superuser
 nor `BYPASSRLS`, and that the ledger is append-only for it.
 
-### Faster test runs (optional)
+### Container reuse is off, on purpose
 
-The container is declared reusable, but reuse is opt-in per machine. To enable it:
+Each run starts a fresh container. That is a deliberate choice, not an oversight:
+reuse shares one database across runs, and because these tests seed tenants, the
+first cross-run collision would surface as a *tenant isolation failure*. That is
+the most expensive false alarm this codebase can produce — the correct response
+to a real one is auditing every query written since M1 — and it is not worth the
+few seconds of startup time.
+
+Tests must not collide within a single run either, since one container is shared
+by every test class. Take tenant ids from `AbstractIntegrationTest.newTenantId()`
+rather than hard-coding UUID literals, never assert on a fixed tenant id, and
+never assume your tenant is the only one in the database.
+
+If you want reuse locally anyway, it is opt-in per machine:
 
 ```bash
 echo 'testcontainers.reuse.enable=true' >> ~/.testcontainers.properties
 ```
 
-Without it Testcontainers logs a notice and starts a fresh container each run —
-correct either way, just slower.
+Nothing in the build asks for it, so this alone will not enable it — the
+container would also need `.withReuse(true)` restored in
+`AbstractIntegrationTest`. Please read the paragraph above before doing that.
 
 ## Milestone status
 

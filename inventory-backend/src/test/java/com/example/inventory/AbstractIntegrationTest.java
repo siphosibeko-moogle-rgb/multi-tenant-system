@@ -1,5 +1,7 @@
 package com.example.inventory;
 
+import java.util.UUID;
+
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -30,13 +32,19 @@ import org.testcontainers.utility.DockerImageName;
  * policy from V1 into a no-op, so tests run through the same restricted role
  * production uses (CLAUDE.md T2).
  *
- * <h2>Container reuse</h2>
+ * <h2>Container reuse is deliberately OFF</h2>
  *
- * <p>{@code withReuse(true)} only takes effect if the developer has opted in on
- * their machine with {@code testcontainers.reuse.enable=true} in
- * {@code ~/.testcontainers.properties}. Without it Testcontainers logs a notice
- * and falls back to a fresh container per run — correct either way, just slower.
- * See the README.
+ * <p>Reuse would share one container across runs. Because these tests seed
+ * tenants, the first cross-run collision would present as a tenant isolation
+ * failure — the most expensive possible false alarm in this codebase, since the
+ * correct response to a real one is auditing every query written since M1. The
+ * startup time saved is not worth that. The README documents the opt-in for
+ * anyone who wants it locally, but nothing here asks for it.
+ *
+ * <p>Isolation between tests does not depend on that decision, though: the
+ * container is a per-JVM singleton shared by every test class in a run, so tests
+ * must not collide <em>within</em> a run either. {@link #newTenantId()} is how —
+ * see its javadoc.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -57,11 +65,28 @@ public abstract class AbstractIntegrationTest {
             new PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine"))
                     .withDatabaseName(DATABASE_NAME)
                     .withUsername(OWNER_ROLE)
-                    .withPassword(OWNER_PASSWORD)
-                    .withReuse(true);
+                    .withPassword(OWNER_PASSWORD);
 
     static {
         POSTGRES.start();
+    }
+
+    /**
+     * A tenant id no other test will ever use.
+     *
+     * <p>Every test that seeds a tenant must take its ids from here rather than
+     * hard-coding a literal UUID. One container is shared by every test class in
+     * a run, so two classes that both seeded, say,
+     * {@code 00000000-0000-0000-0000-000000000001} would see each other's rows —
+     * and that shows up as a failing isolation assertion rather than as the test
+     * collision it actually is. Random v4 ids make the collision impossible
+     * instead of unlikely-and-debugged-later.
+     *
+     * <p>This also means a test must never assert on a fixed tenant id, and must
+     * never assume it is the only tenant in the database.
+     */
+    protected static UUID newTenantId() {
+        return UUID.randomUUID();
     }
 
     @DynamicPropertySource
