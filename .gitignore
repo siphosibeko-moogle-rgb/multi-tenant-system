@@ -1,0 +1,72 @@
+# --- Build output -----------------------------------------------------------
+target/
+build/
+out/
+*.jar
+*.war
+*.class
+
+# Keep the Maven wrapper jar: it is how ./mvnw bootstraps on a clean checkout.
+!.mvn/wrapper/maven-wrapper.jar
+
+# --- Eclipse ----------------------------------------------------------------
+# Workspace state, not project source. Two workspaces exist in this tree
+# (multi-tenant-system/.metadata and inventory-platform/.metadata).
+.metadata/
+.recommenders/
+.apt_generated/
+.factorypath
+.springBeans
+.sts4-cache/
+
+# Eclipse per-project files. These carry machine-specific paths and a Java 17
+# compliance setting that contradicts the Java 21 the build targets, so they
+# are deliberately not shared.
+.project
+.classpath
+.settings/
+
+# --- IntelliJ IDEA ----------------------------------------------------------
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# --- VS Code ----------------------------------------------------------------
+.vscode/
+
+# --- NetBeans ---------------------------------------------------------------
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+# --- Gradle (android/) ------------------------------------------------------
+.gradle/
+local.properties
+android/.cxx/
+captures/
+
+# --- Secrets and local overrides --------------------------------------------
+# No credentials are committed. Real values come from the environment; see the
+# README. These patterns exist so a local override cannot be added by accident.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+application-local.properties
+application-secret*.yml
+
+# --- OS ---------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# --- Logs and temp ----------------------------------------------------------
+*.log
+logs/
+tmp/
