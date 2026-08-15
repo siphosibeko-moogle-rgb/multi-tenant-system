@@ -7,11 +7,11 @@
 #
 # The values below are local-only defaults, every one overridable from the
 # environment. Nothing here is a secret and nothing here is used off a dev box.
-
+name: multi-tenant-system
 services:
+
   db:
     image: postgres:16-alpine
-    container_name: inventory-db
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-inventory}
