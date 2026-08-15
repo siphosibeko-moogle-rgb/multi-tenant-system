@@ -2,6 +2,7 @@ package com.example.inventory;
 
 import javax.sql.DataSource;
 
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,6 +45,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link AbstractIntegrationTest}: the assertion depends on migrations actually
  * being applied during this context's startup, and on a shared container an
  * earlier test class would already have applied them.
+ *
+ * <p><strong>Read this together with {@link FlywayPrimaryBindingControlTest}.</strong>
+ * That class is the negative control: it removes {@code spring.flyway.url/user/password}
+ * and nothing else, and shows Flyway then migrating as {@code inventory_app}
+ * successfully and silently. Without it, the assertions here could pass for
+ * reasons having nothing to do with the configuration they claim to protect.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -149,5 +156,33 @@ class FlywayBindingTest {
         assertThat(user)
                 .as("if the primary pool were the owner, this test would prove nothing")
                 .isEqualTo(APP_ROLE);
+    }
+
+    /**
+     * Asks the configured {@link Flyway} bean directly which connection it holds,
+     * rather than inferring it after the fact from {@code installed_by}.
+     *
+     * <p>The two assertions fail at different times and that is the point.
+     * {@code installed_by} is historical: it can only be checked after migrations
+     * have run, and against a database that was already migrated it reports what
+     * some earlier run did, not what this configuration would do now. This one is
+     * a live property of the wiring, so it stays meaningful even when there is
+     * nothing left to migrate.
+     */
+    @Test
+    @DisplayName("the Flyway bean itself holds an owner connection, not the primary pool")
+    void flywayBeanIsBoundToTheOwnerConnection(@Autowired Flyway flyway) {
+        DataSource flywayDataSource = flyway.getConfiguration().getDataSource();
+
+        assertThat(flywayDataSource)
+                .as("Flyway must have a datasource of its own, distinct from the primary bean")
+                .isNotNull();
+
+        String user = new JdbcTemplate(flywayDataSource)
+                .queryForObject("SELECT current_user", String.class);
+
+        assertThat(user)
+                .as("spring.flyway.url/user/password must win over the @Primary DataSource bean")
+                .isEqualTo(OWNER_ROLE);
     }
 }
