@@ -1,0 +1,41 @@
+# Local development stack.
+#
+# This exists so `./mvnw spring-boot:run -Dspring-boot.run.profiles=local` and a
+# manual `flyway:info` have a real PostgreSQL 16 to talk to. Integration tests do
+# NOT use this container — Testcontainers starts its own throwaway instance per
+# run (CLAUDE.md T10).
+#
+# The values below are local-only defaults, every one overridable from the
+# environment. Nothing here is a secret and nothing here is used off a dev box.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: inventory-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-inventory}
+      # This role is the cluster superuser and the schema owner. Flyway connects
+      # as this role to run migrations. The application does NOT — it connects as
+      # the non-superuser, NOBYPASSRLS role that V2 creates (CLAUDE.md T2).
+      POSTGRES_USER: ${POSTGRES_USER:-inventory_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local_dev_only}
+      # Deterministic initdb so a dropped volume rebuilds identically.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready against the real database, not just the TCP port: during
+      # initdb the server briefly accepts connections on a bootstrap instance,
+      # and a port check would report healthy too early.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-inventory_owner} -d ${POSTGRES_DB:-inventory}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  pgdata:
+    name: inventory_pgdata

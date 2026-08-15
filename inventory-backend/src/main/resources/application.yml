@@ -1,0 +1,50 @@
+# Common configuration. Deliberately contains NO credentials and NO host names —
+# those live in the profile files, where local defaults can be local-only and
+# prod can insist on real environment variables.
+
+spring:
+  application:
+    name: inventory-backend
+
+  # A bare `./mvnw spring-boot:run` picks up the local profile. prod must always
+  # be activated explicitly, and it has no defaults to fall back on.
+  profiles:
+    default: local
+
+  jpa:
+    hibernate:
+      # Never create or update. Flyway owns the schema; Hibernate only checks it.
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # Flyway connects with its own credentials (see the profile files) as the
+    # schema owner. The application's own datasource is the non-superuser
+    # inventory_app role, which has no DDL rights at all — CLAUDE.md T2.
+    #
+    # Not enabling baseline-on-migrate: the baseline is V1, and letting Flyway
+    # silently baseline a non-empty database would hide a real problem.
+    validate-on-migrate: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    db:
+      enabled: true
+
+logging:
+  level:
+    org.flywaydb: info

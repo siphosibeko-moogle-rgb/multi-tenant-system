@@ -1,0 +1,35 @@
+# Integration test profile.
+#
+# Almost everything is intentionally absent. AbstractIntegrationTest supplies the
+# datasource and Flyway properties at runtime via @DynamicPropertySource, because
+# the Testcontainers port is not known until the container is up.
+#
+# There is no H2 fallback and there must never be one: H2 has neither row-level
+# security nor set_config, so it cannot exercise the mechanism the whole tenancy
+# story rests on (CLAUDE.md T10).
+
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # Tests run against a container that may be reused between runs, so the
+    # checksums of already-applied migrations still have to line up.
+    validate-on-migrate: true
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    org.flywaydb: info
+    org.testcontainers: info
+    # Docker client chatter drowns out the actual test output otherwise.
+    com.github.dockerjava: warn
+    tc.postgres: warn

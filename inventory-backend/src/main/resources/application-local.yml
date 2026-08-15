@@ -1,0 +1,36 @@
+# Local development, against the `db` service in docker-compose.yml.
+#
+# Every value here is an environment variable with a local-only default. The
+# defaults match docker-compose.yml so a fresh clone runs with no setup. They
+# are not secrets and must never be reused anywhere real.
+
+spring:
+  datasource:
+    # The application connects as inventory_app: NOSUPERUSER, NOBYPASSRLS, and
+    # therefore actually subject to the RLS policies from V1.
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/inventory}
+    username: ${DB_APP_USER:inventory_app}
+    password: ${DB_APP_PASSWORD:app_local_only}
+    hikari:
+      pool-name: inventory-app-pool
+      maximum-pool-size: ${DB_POOL_MAX:10}
+
+  flyway:
+    # Migrations run as the schema owner, on a separate connection from the one
+    # the application uses. This is the only place owner credentials appear.
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/inventory}
+    user: ${DB_MIGRATION_USER:inventory_owner}
+    password: ${DB_MIGRATION_PASSWORD:local_dev_only}
+    placeholders:
+      # V2 substitutes this into CREATE ROLE ... PASSWORD. It must match
+      # spring.datasource.password above or the app cannot log in afterwards.
+      appUserPassword: ${DB_APP_PASSWORD:app_local_only}
+
+management:
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    org.hibernate.SQL: info

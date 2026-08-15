@@ -1,0 +1,60 @@
+# Production.
+#
+# Every value below is a required environment variable with NO default. If one is
+# missing the application fails to start, loudly, at boot — which is the correct
+# outcome. A default here would mean a misconfigured production instance quietly
+# pointing somewhere it should not.
+#
+# DB_APP_USER must be a NOSUPERUSER, NOBYPASSRLS role (V2 creates exactly that).
+# Pointing this at the owner or any superuser disables every RLS policy in the
+# schema and silently removes tenant isolation — CLAUDE.md T2.
+
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_APP_USER}
+    password: ${DB_APP_PASSWORD}
+    hikari:
+      pool-name: inventory-app-pool
+      maximum-pool-size: ${DB_POOL_MAX:20}
+      # A pooled connection that kept app.tenant_id from a previous request is a
+      # cross-tenant leak (CLAUDE.md T3). M1's TenantConnectionProvider resets it
+      # on release; recycling connections bounds the blast radius of a bug there.
+      max-lifetime: ${DB_POOL_MAX_LIFETIME_MS:600000}
+
+  flyway:
+    # Migrations run as the schema owner, never as the application role.
+    url: ${DB_MIGRATION_URL:${DB_URL}}
+    user: ${DB_MIGRATION_USER}
+    password: ${DB_MIGRATION_PASSWORD}
+    placeholders:
+      appUserPassword: ${DB_APP_PASSWORD}
+
+  jpa:
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      # Never leak schema, driver versions or connection details to an
+      # unauthenticated caller.
+      show-details: never
+      show-components: never
+
+server:
+  error:
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+
+logging:
+  level:
+    root: info
+    org.hibernate.SQL: warn
