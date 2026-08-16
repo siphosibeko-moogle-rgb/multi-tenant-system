@@ -111,6 +111,16 @@ public class GlobalExceptionHandler {
         return response;
     }
 
+    @ExceptionHandler(PreconditionFailedException.class)
+    ResponseEntity<ProblemDetail> preconditionFailed(PreconditionFailedException e) {
+        // 412, not 409. The caller's request was well-formed and permitted; it
+        // was simply based on a read that is no longer current. The fix is to
+        // re-read and decide again, which is a different instruction from
+        // "this conflicts with existing state".
+        return problem(HttpStatus.PRECONDITION_FAILED, "Precondition failed", e.getMessage(),
+                "stale-write");
+    }
+
     @ExceptionHandler(NotFoundException.class)
     ResponseEntity<ProblemDetail> notFound(NotFoundException e) {
         return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage(), "not-found");
