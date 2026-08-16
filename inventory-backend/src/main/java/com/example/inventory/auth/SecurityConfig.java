@@ -7,12 +7,13 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpMethod;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
@@ -28,6 +29,7 @@ import org.springframework.security.web.SecurityFilterChain;
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * Stateless JWT security.
@@ -65,12 +67,46 @@ public class SecurityConfig {
                 .sessionManagement(session ->
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/auth/**").permitAll()
+                        // Obtaining a token cannot require a token.
+                        .requestMatchers("/auth/register-tenant", "/auth/login", "/auth/refresh")
+                        .permitAll()
+                        // /auth/logout is NOT in that list. The contract applies
+                        // the default bearerAuth to it — it is the one auth
+                        // endpoint without `security: []` — and M1 originally had
+                        // it open, which contradicted the contract. Requiring a
+                        // token also makes the endpoint meaningful: revoking a
+                        // session should be something the session's owner does.
                         .requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/**")
                         .permitAll()
                         .anyRequest().authenticated())
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt(Customizer.withDefaults()));
+                .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt ->
+                        jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));
         return http.build();
+    }
+
+    /**
+     * Maps the {@code role} claim onto a Spring Security authority.
+     *
+     * <p>The default converter reads {@code scope}/{@code scp}, which these
+     * tokens do not carry, so without this every authenticated caller would have
+     * <em>no</em> authorities and every {@code @PreAuthorize("hasRole(...)")}
+     * would deny — including the owner's. The failure is at least loud, but it
+     * would be loud in a way that invites someone to loosen the rule rather than
+     * fix the mapping.
+     *
+     * <p>{@code ROLE_} prefix because {@code hasRole('owner')} looks for
+     * {@code ROLE_owner}. The claim value stays lowercase, matching the
+     * {@code user_role} enum in the database and the contract.
+     */
+    private static JwtAuthenticationConverter jwtAuthenticationConverter() {
+        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+        converter.setJwtGrantedAuthoritiesConverter(jwt -> {
+            String role = jwt.getClaimAsString(JwtService.ROLE_CLAIM);
+            return role == null || role.isBlank()
+                    ? List.of()
+                    : List.of(new SimpleGrantedAuthority("ROLE_" + role));
+        });
+        return converter;
     }
 
     /**

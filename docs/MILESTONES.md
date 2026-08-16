@@ -204,15 +204,33 @@ recorded exactly once
 *~1 week*
 
 **Build**
-- Rate limiting on auth endpoints; audit log coverage on all mutations
+- ~~Rate limiting on auth endpoints~~ — **done in M1.** `AuthRateLimiter` covers
+`/auth/register-tenant` and `/auth/login`. What remains for M9 is making it
+*distributed*: it is currently a per-instance in-memory counter, so N replicas
+means N× the effective limit. Needs shared state (Redis or a table).
+- Audit log coverage on all mutations
 - Index review against real query plans; structured logging with trace ids
 - Backup/restore runbook; secrets out of the repo
+- **JWT signing key rotation** (deferred from M1). Today there is one symmetric
+HS256 key, no `kid` header and no JWKS, so rotating it invalidates every live
+access and refresh token at once. Needed:
+- a `kid` in the header so tokens name the key that signed them
+- more than one key trusted for verification while only the newest signs,
+so a rotation drains rather than cuts off
+- asymmetric keys with a published JWKS if anything other than this
+application ever has to verify a token
+Note that forging this key means forging the `tid` claim, which is the whole
+of tenant isolation — so key handling is an isolation concern, not just an
+auth one. `SecurityConfig` refuses to start on a key shorter than 32 bytes.
 
 **Done when**
 - Brute-forcing login is throttled and logged
+- The rate limit holds across a multi-replica deployment, not just per instance
 - Every mutating endpoint writes an audit row with before/after state
 - `EXPLAIN ANALYZE` on the three slowest reports shows index scans, not seq scans
 - A restore from backup into a clean database reproduces working data
+- A signing key can be rotated with no user-visible logout: tokens signed by the
+previous key keep verifying until they expire, and new tokens use the new key
 
 ---
 

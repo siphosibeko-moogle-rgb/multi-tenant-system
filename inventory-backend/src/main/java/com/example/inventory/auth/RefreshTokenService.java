@@ -182,6 +182,18 @@ public class RefreshTokenService {
                 tokenIssuer.issueFor(tenantId, userId, user.role(), user, deviceLabel));
     }
 
+    /**
+     * Revokes every live refresh token for the authenticated user — "sign out
+     * everywhere", and what a bodyless {@code POST /auth/logout} does.
+     *
+     * <p>The caller is already authenticated, so the tenant comes from the
+     * verified claim via {@code TenantFilter}; it is passed in only so this
+     * method does not have to reach into a ThreadLocal it did not set.
+     */
+    public void logoutEverySession(UUID tenantId, UUID userId) {
+        revokeEveryTokenFor(userId);
+    }
+
     private void revokeEveryTokenFor(UUID userId) {
         appJdbc.update(
                 "UPDATE refresh_tokens SET revoked_at = now() "

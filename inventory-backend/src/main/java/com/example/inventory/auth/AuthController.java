@@ -13,7 +13,9 @@ import com.example.inventory.auth.AuthDtos.RefreshRequest;
 import com.example.inventory.auth.AuthDtos.TenantChoices;
 import com.example.inventory.auth.AuthDtos.TenantRegistrationRequest;
 import com.example.inventory.auth.LoginService.LoginOutcome;
+import com.example.inventory.tenancy.TenantContext;
 import com.example.inventory.web.AuthRateLimiter;
+import com.example.inventory.web.UnauthorizedException;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -83,11 +85,27 @@ public class AuthController {
      *
      * <p>Reporting "that token was already revoked" would turn logout into an
      * oracle for whether a stolen token is still usable.
+     *
+     * <p><strong>Requires an access token</strong>, unlike the three endpoints
+     * above. That matches the contract, which applies the default
+     * {@code bearerAuth} here and only marks the others {@code security: []}.
+     * M1 originally had it open, which contradicted the contract and let anyone
+     * holding a stolen refresh token revoke it — harmless in itself, but the
+     * asymmetry was unintended rather than reasoned.
+     *
+     * <p>With no body, logs the caller's whole session out by revoking every
+     * live refresh token for the authenticated user. With a refresh token in the
+     * body, revokes that one — the "sign out this device" case.
      */
     @PostMapping("/logout")
     ResponseEntity<Void> logout(@RequestBody(required = false) RefreshRequest request) {
-        if (request != null && request.refreshToken() != null) {
+        var identity = TenantContext.current()
+                .orElseThrow(() -> new UnauthorizedException("Not authenticated"));
+
+        if (request != null && request.refreshToken() != null && !request.refreshToken().isBlank()) {
             refreshTokenService.logout(request.refreshToken());
+        } else {
+            refreshTokenService.logoutEverySession(identity.tenantId(), identity.userId());
         }
         return ResponseEntity.noContent().build();
     }

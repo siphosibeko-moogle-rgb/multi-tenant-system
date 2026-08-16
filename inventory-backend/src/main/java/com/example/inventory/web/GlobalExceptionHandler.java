@@ -1,10 +1,15 @@
 package com.example.inventory.web;
 
 import java.net.URI;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpHeaders;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -33,7 +38,16 @@ import org.springframework.web.context.request.RequestContextHolder;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
     private static final String PROBLEM_BASE = "https://api.example.com/problems/";
+
+    /**
+     * {@code insufficient_privilege}. PostgreSQL uses it both for a missing table
+     * privilege and for a {@code WITH CHECK} rejection — i.e. an attempted
+     * cross-tenant write.
+     */
+    static final String INSUFFICIENT_PRIVILEGE = "42501";
 
     @ExceptionHandler(UnauthorizedException.class)
     ResponseEntity<ProblemDetail> unauthorized(UnauthorizedException e) {
@@ -77,6 +91,62 @@ public class GlobalExceptionHandler {
         return response;
     }
 
+    @ExceptionHandler(NotFoundException.class)
+    ResponseEntity<ProblemDetail> notFound(NotFoundException e) {
+        return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage(), "not-found");
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    ResponseEntity<ProblemDetail> accessDenied(AccessDeniedException e) {
+        // The caller authenticated but their role does not permit this. 403 is
+        // correct here and does not conflict with T8: the endpoint's existence
+        // is public in the contract, and no resource id is being confirmed.
+        return problem(HttpStatus.FORBIDDEN, "Forbidden",
+                "Your role does not permit this action", "insufficient-role");
+    }
+
+    /**
+     * A database privilege or row-level-security refusal.
+     *
+     * <p><strong>Keyed on SQLSTATE 42501, never on the exception type.</strong>
+     * This is the important handler in this class and the reason it exists.
+     *
+     * <p>PostgreSQL raises {@code 42501} ({@code insufficient_privilege}) both
+     * when a role lacks a table privilege and when a {@code WITH CHECK} clause
+     * rejects a cross-tenant write. Spring's {@code SQLStateSQLExceptionTranslator}
+     * maps that class of SQLSTATE to {@link org.springframework.jdbc.BadSqlGrammarException},
+     * whose message names only the statement and never mentions row-level
+     * security at all.
+     *
+     * <p>So an attempted tenant-isolation violation — the single most serious
+     * event this system can observe — arrives looking like a typo in a query,
+     * and anything dispatching on exception type would report and log it as a
+     * malformed statement. That is why the dispatch below unwraps to the
+     * {@link SQLException} and reads {@code getSQLState()}.
+     *
+     * <p>Deliberately still a generic 500 to the caller: a client has no
+     * legitimate use for the distinction, and confirming "you were blocked by a
+     * policy" tells a prober their guess was well-formed. The value is in the
+     * server-side log line, which says what actually happened.
+     */
+    @ExceptionHandler(DataAccessException.class)
+    ResponseEntity<ProblemDetail> dataAccess(DataAccessException e) {
+        String sqlState = sqlStateOf(e);
+
+        if (INSUFFICIENT_PRIVILEGE.equals(sqlState)) {
+            log.error("SQLSTATE 42501 — a statement was refused by a privilege or an RLS policy. "
+                    + "If this was a WITH CHECK failure it is an attempted cross-tenant write, "
+                    + "not a malformed query. Cause: {}", rootMessage(e));
+
+            return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error",
+                    "The request could not be processed", "internal-error");
+        }
+
+        log.error("Unhandled data access failure (SQLSTATE {})", sqlState, e);
+        return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error",
+                "The request could not be processed", "internal-error");
+    }
+
     /**
      * The catch-all.
      *
@@ -87,8 +157,36 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     ResponseEntity<ProblemDetail> unexpected(Exception e) {
+        log.error("Unhandled exception", e);
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error",
                 "The request could not be processed", "internal-error");
+    }
+
+    /**
+     * Walks the cause chain for a {@link SQLException} and returns its SQLSTATE.
+     *
+     * <p>Spring wraps the driver's exception at least once, and the SQLSTATE is
+     * only on the original. Reading it off the wrapper's message would be
+     * string-matching on prose that changes between versions.
+     */
+    static String sqlStateOf(Throwable e) {
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SQLException sqlException) {
+                return sqlException.getSQLState();
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+        }
+        return null;
+    }
+
+    private static String rootMessage(Throwable e) {
+        Throwable cause = e;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause.getMessage();
     }
 
     private static ResponseEntity<ProblemDetail> problem(

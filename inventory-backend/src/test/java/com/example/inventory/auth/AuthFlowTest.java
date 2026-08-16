@@ -241,17 +241,63 @@ class AuthFlowTest extends AbstractIntegrationTest {
         @DisplayName("logout revokes the presented token and stays 204 either way")
         void logoutRevokes() {
             Registered account = register();
-            String token = account.tokens().refreshToken();
+            String refresh = account.tokens().refreshToken();
+            String access = account.tokens().accessToken();
 
-            assertThat(http().post("/auth/logout", json("refreshToken", token)).status())
-                    .isEqualTo(204);
-            assertThat(http().post("/auth/refresh", json("refreshToken", token)).status())
+            assertThat(http().postWithToken("/auth/logout", json("refreshToken", refresh), access)
+                    .status()).isEqualTo(204);
+            assertThat(http().post("/auth/refresh", json("refreshToken", refresh)).status())
                     .isEqualTo(401);
 
             // Logging out twice must not report that the token was already gone:
             // that would make logout an oracle for whether a stolen token is live.
-            assertThat(http().post("/auth/logout", json("refreshToken", token)).status())
-                    .isEqualTo(204);
+            assertThat(http().postWithToken("/auth/logout", json("refreshToken", refresh), access)
+                    .status()).isEqualTo(204);
+        }
+
+        @Test
+        @DisplayName("logout requires an access token, as the contract says")
+        void logoutIsAuthenticated() {
+            Registered account = register();
+
+            // The contract marks register-tenant, login and refresh with
+            // `security: []` and leaves logout on the default bearerAuth. M1
+            // originally had it open, which contradicted that. Asserted here so
+            // the reconciliation cannot quietly regress.
+            assertThat(http().post("/auth/logout",
+                    json("refreshToken", account.tokens().refreshToken())).status())
+                    .as("logout without a token must be refused")
+                    .isEqualTo(401);
+
+            // ...and the token is still live afterwards, i.e. the rejected call
+            // did nothing.
+            assertThat(http().post("/auth/refresh",
+                    json("refreshToken", account.tokens().refreshToken())).status())
+                    .isEqualTo(200);
+        }
+
+        @Test
+        @DisplayName("a bodyless logout ends every session for the user")
+        void bodylessLogoutEndsEverySession() {
+            Registered account = register();
+
+            // Two live sessions: the one from registration, and one from a login.
+            var loggedIn = http().post("/auth/login", json(
+                    "email", account.email(), "password", account.password(),
+                    "tenantSlug", account.slug()));
+            assertThat(loggedIn.status()).isEqualTo(200);
+            String secondSession = loggedIn.at("/refreshToken");
+
+            assertThat(http().postWithToken("/auth/logout", "{}",
+                    account.tokens().accessToken()).status()).isEqualTo(204);
+
+            assertThat(http().post("/auth/refresh",
+                    json("refreshToken", account.tokens().refreshToken())).status())
+                    .as("sign out everywhere means everywhere")
+                    .isEqualTo(401);
+            assertThat(http().post("/auth/refresh", json("refreshToken", secondSession)).status())
+                    .as("including sessions the caller did not name")
+                    .isEqualTo(401);
         }
     }
 

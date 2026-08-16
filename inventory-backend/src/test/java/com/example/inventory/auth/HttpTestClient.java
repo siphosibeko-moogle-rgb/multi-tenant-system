@@ -66,6 +66,16 @@ public final class HttpTestClient {
                 .POST(HttpRequest.BodyPublishers.ofString(jsonBody)));
     }
 
+    public Response postWithToken(String path, String jsonBody, String bearerToken) {
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(baseUrl + path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+        if (bearerToken != null) {
+            request.header("Authorization", "Bearer " + bearerToken);
+        }
+        return send(request);
+    }
+
     public Response get(String path, String bearerToken) {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(baseUrl + path)).GET();
         if (bearerToken != null) {

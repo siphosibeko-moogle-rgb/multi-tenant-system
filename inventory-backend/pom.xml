@@ -77,6 +77,9 @@
          =================================================================== -->
     <app.login.password>login_local_only</app.login.password>
 
+    <!-- Not in the Boot 4.1 BOM, so it has to be pinned. Reads OpenAPI 3.1. -->
+    <swagger-parser.version>2.1.22</swagger-parser.version>
+
     <jacoco.version>0.8.15</jacoco.version>
     <!-- M0 has no business logic, so any non-zero gate is either vacuous or an
          instant failure. The plugin is wired now so M1 only has to raise this. -->
@@ -134,6 +137,20 @@
     <dependency>
       <groupId>org.springframework.security</groupId>
       <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Validates docs/openapi.yaml as part of the build (ApiContractTest).
+         The contract is the source of truth (CLAUDE.md section 1), and it spent
+         M0 and M1 silently unparseable while claiming to validate — a check that
+         runs only when somebody remembers is the same as no check.
+
+         Not managed by the Boot BOM, so the version is pinned here. Test scope:
+         nothing at runtime reads the contract. -->
+    <dependency>
+      <groupId>io.swagger.parser.v3</groupId>
+      <artifactId>swagger-parser</artifactId>
+      <version>${swagger-parser.version}</version>
       <scope>test</scope>
     </dependency>
 
