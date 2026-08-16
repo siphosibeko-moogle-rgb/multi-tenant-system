@@ -31,6 +31,34 @@ spring:
       # password the application will connect with. The flyway-maven-plugin
       # declares the identical placeholder in pom.xml for the CLI path.
       appUserPassword: ${DB_APP_PASSWORD:@app.db.password@}
+      # Likewise for V3's inventory_login role, paired with
+      # app.datasource.login.password below. Both Flyway configurations must
+      # carry this placeholder — see CLAUDE.md section 9. Adding it here only
+      # would leave `./mvnw flyway:migrate` failing to parse V3, and it would
+      # fail only against an empty schema.
+      loginUserPassword: ${DB_LOGIN_PASSWORD:@app.login.password@}
+
+# The second pool. Deliberately NOT under spring.datasource — that prefix names
+# the application's primary datasource, and a second entry there would be bound
+# by Boot's autoconfiguration rather than by DataSourceConfig.
+#
+# This connects as inventory_login (V3): SELECT on tenants and users only, with
+# a per-role policy letting it read them unscoped. It exists so login can answer
+# "which tenant does this email belong to?" before app.tenant_id is known, and
+# it must never be used for anything else.
+app:
+  datasource:
+    login:
+      url: ${DB_URL:jdbc:postgresql://localhost:5432/inventory}
+      username: ${DB_LOGIN_USER:inventory_login}
+      # Same build-time filtering as the app password above, from the single
+      # <app.login.password> property in pom.xml.
+      password: ${DB_LOGIN_PASSWORD:@app.login.password@}
+      hikari:
+        pool-name: inventory-login-pool
+        # Login lookups are short and rare compared with application traffic;
+        # this pool exists for a single query per authentication attempt.
+        maximum-pool-size: ${DB_LOGIN_POOL_MAX:4}
 
 management:
   endpoint:

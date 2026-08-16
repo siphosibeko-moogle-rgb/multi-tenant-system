@@ -57,6 +57,26 @@
          =================================================================== -->
     <app.db.password>app_local_only</app.db.password>
 
+    <!-- ===================================================================
+         THE single source of truth for the login role's password.
+
+         Same contract as <app.db.password> above, for the inventory_login role
+         created by V3: one literal, consumed by both Flyway configurations
+         (the <placeholders> below and spring.flyway.placeholders.* in
+         application-local.yml, which reads it as @app.login.password@).
+
+         A separate password from the app role's on purpose. They are separate
+         roles with separate privileges, and sharing one secret would mean a
+         leak of either is a leak of both.
+
+         Overriding, in increasing precedence:
+           default below
+           DB_LOGIN_PASSWORD environment variable (see the profile at the end
+             of this file; Spring reads the same variable directly)
+           -Dapp.login.password=...  on the Maven command line
+         =================================================================== -->
+    <app.login.password>login_local_only</app.login.password>
+
     <jacoco.version>0.8.15</jacoco.version>
     <!-- M0 has no business logic, so any non-zero gate is either vacuous or an
          instant failure. The plugin is wired now so M1 only has to raise this. -->
@@ -205,6 +225,7 @@
                success and only a fresh volume exposes it. -->
           <placeholders>
             <appUserPassword>${app.db.password}</appUserPassword>
+            <loginUserPassword>${app.login.password}</loginUserPassword>
           </placeholders>
         </configuration>
         <dependencies>
@@ -283,6 +304,22 @@
       </activation>
       <properties>
         <app.db.password>${env.DB_APP_PASSWORD}</app.db.password>
+      </properties>
+    </profile>
+
+    <!-- The same arrangement for the V3 login role. A separate profile rather
+         than a second property on the one above: the two variables are set
+         independently, and bundling them would mean supplying DB_APP_PASSWORD
+         alone silently left the login password at its local default. -->
+    <profile>
+      <id>login-db-password-from-env</id>
+      <activation>
+        <property>
+          <name>env.DB_LOGIN_PASSWORD</name>
+        </property>
+      </activation>
+      <properties>
+        <app.login.password>${env.DB_LOGIN_PASSWORD}</app.login.password>
       </properties>
     </profile>
   </profiles>

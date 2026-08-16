@@ -61,6 +61,15 @@ public abstract class AbstractIntegrationTest {
     protected static final String APP_ROLE = "inventory_app";
     protected static final String APP_PASSWORD = "test_app_only";
 
+    /**
+     * Created by V3. NOSUPERUSER, NOBYPASSRLS, NOINHERIT — SELECT on
+     * {@code tenants} and {@code users} only, readable unscoped through the
+     * {@code login_read} policy. A different password from the app role's,
+     * matching production: separate roles, separate secrets.
+     */
+    protected static final String LOGIN_ROLE = "inventory_login";
+    protected static final String LOGIN_PASSWORD = "test_login_only";
+
     protected static final PostgreSQLContainer POSTGRES =
             new PostgreSQLContainer(DockerImageName.parse("postgres:16-alpine"))
                     .withDatabaseName(DATABASE_NAME)
@@ -98,10 +107,22 @@ public abstract class AbstractIntegrationTest {
         // Substituted into CREATE ROLE ... PASSWORD in V2, so it has to agree
         // with the application password below.
         registry.add("spring.flyway.placeholders.appUserPassword", () -> APP_PASSWORD);
+        // Substituted into CREATE ROLE ... PASSWORD in V3. Must agree with the
+        // login pool below for the same reason appUserPassword must agree with
+        // the application pool.
+        registry.add("spring.flyway.placeholders.loginUserPassword", () -> LOGIN_PASSWORD);
 
         // The application: the restricted role, exactly as in production.
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", () -> APP_ROLE);
         registry.add("spring.datasource.password", () -> APP_PASSWORD);
+
+        // The login pool. DataSourceConfig defines both beans, so this is not
+        // optional configuration in tests — the context will not start without
+        // it, which is the intended outcome: a test environment missing the
+        // login pool would silently prove nothing about it.
+        registry.add("app.datasource.login.url", POSTGRES::getJdbcUrl);
+        registry.add("app.datasource.login.username", () -> LOGIN_ROLE);
+        registry.add("app.datasource.login.password", () -> LOGIN_PASSWORD);
     }
 }

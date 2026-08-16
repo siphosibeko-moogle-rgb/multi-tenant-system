@@ -424,6 +424,106 @@ class TenantIsolationTest extends AbstractIntegrationTest {
     }
 
     // ------------------------------------------------------------------
+    // Registration — proving the design decision, not just asserting it
+    // ------------------------------------------------------------------
+
+    @Nested
+    @DisplayName("Tenant registration on the application pool")
+    class Registration {
+
+        /**
+         * POST /auth/register-tenant has to create a tenant and its first user
+         * before any tenant exists to be bound to. V3 section 5 chooses to run
+         * that on the ordinary application pool, with {@code app.tenant_id}
+         * bound to the UUID the service is about to create — rather than on the
+         * owner connection or a fourth write-capable role.
+         *
+         * <p>That choice is only sound if RLS actually accepts the inserts, so
+         * this test is the evidence for it. If it ever fails, the decision has
+         * to be revisited, not worked around.
+         */
+        @Test
+        @DisplayName("succeeds when app.tenant_id is bound to the id being created")
+        void registrationWorksOnTheApplicationPool() {
+            UUID newTenant = newTenantId();
+
+            withTenant(newTenant, jdbc -> {
+                // tenants.tenant_self WITH CHECK (id = current_tenant_id())
+                jdbc.update("INSERT INTO tenants (id, slug, name) VALUES (?, ?, ?)",
+                        newTenant, "reg-" + newTenant.toString().substring(0, 8), "Newly Registered");
+
+                // users.tenant_isolation WITH CHECK (tenant_id = current_tenant_id())
+                jdbc.update("""
+                        INSERT INTO users (tenant_id, email, full_name, role, status)
+                        VALUES (?, ?, 'First Owner', 'owner', 'active')
+                        """, newTenant, "owner-" + newTenant + "@example.test");
+
+                assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM tenants WHERE id = ?", Long.class, newTenant))
+                        .as("the tenant row must be visible to the transaction that created it")
+                        .isEqualTo(1L);
+                assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM users WHERE tenant_id = ?", Long.class, newTenant))
+                        .as("and so must its first user")
+                        .isEqualTo(1L);
+            });
+        }
+
+        @Test
+        @DisplayName("cannot create a tenant under an id other than the one bound")
+        void registrationCannotCreateSomeoneElsesTenant() {
+            // The containment that makes the app pool the right place for this:
+            // a registration transaction is confined to the tenant it declared.
+            // The owner-privileged alternative would have no such limit — every
+            // policy is off for a superuser, so a bug in that path could write
+            // anywhere, and nothing in the database would stop it.
+            UUID declared = newTenantId();
+            UUID someoneElse = newTenantId();
+
+            withTenant(declared, jdbc ->
+                    assertThatThrownBy(() -> jdbc.update(
+                            "INSERT INTO tenants (id, slug, name) VALUES (?, ?, ?)",
+                            someoneElse, "hijack-" + someoneElse.toString().substring(0, 8), "Hijacked"))
+                            .as("WITH CHECK (id = current_tenant_id()) confines registration "
+                                    + "to the tenant it declared")
+                            .rootCause()
+                            .hasMessageContaining("violates row-level security policy"));
+        }
+
+        @Test
+        @DisplayName("a duplicate slug still fails, even though the tenant row is invisible")
+        void duplicateSlugIsRejectedDespiteRlsHidingTheExistingRow() {
+            // Worth pinning down because it is counter-intuitive. Bound to a new
+            // tenant id, registration cannot SELECT the existing tenant to check
+            // whether a slug is taken — RLS hides it. The UNIQUE index is
+            // enforced physically and independently of RLS, so the collision
+            // still surfaces. M1 maps this to 409 rather than pre-checking.
+            UUID first = newTenantId();
+            String slug = "dup-" + first.toString().substring(0, 8);
+
+            withTenantCommitting(first, jdbc ->
+                    jdbc.update("INSERT INTO tenants (id, slug, name) VALUES (?, ?, ?)",
+                            first, slug, "First Claimant"));
+
+            UUID second = newTenantId();
+            withTenant(second, jdbc -> {
+                assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM tenants WHERE slug = ?", Long.class, slug))
+                        .as("the existing tenant is invisible to this transaction — a pre-check "
+                                + "would wrongly conclude the slug is free")
+                        .isZero();
+
+                assertThatThrownBy(() -> jdbc.update(
+                        "INSERT INTO tenants (id, slug, name) VALUES (?, ?, ?)",
+                        second, slug, "Second Claimant"))
+                        .as("but the unique index still refuses it")
+                        .rootCause()
+                        .hasMessageContaining("duplicate key value violates unique constraint");
+            });
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Plumbing
     // ------------------------------------------------------------------
 
@@ -448,6 +548,26 @@ class TenantIsolationTest extends AbstractIntegrationTest {
     /** Runs {@code work} on the application pool with nothing bound at all. */
     private void withNoTenant(Consumer<JdbcTemplate> work) {
         onAppConnection(work);
+    }
+
+    /**
+     * As {@link #withTenant}, but commits.
+     *
+     * <p>Needed only where a later transaction must see the result — the
+     * duplicate-slug case, which is about a constraint that spans transactions.
+     * Everything else rolls back, and should.
+     */
+    private void withTenantCommitting(UUID tenant, Consumer<JdbcTemplate> work) {
+        try (Connection conn = appDataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            JdbcTemplate jdbc = new JdbcTemplate(new SingleConnectionDataSource(conn, true));
+            jdbc.queryForObject(
+                    "SELECT set_config('app.tenant_id', ?, true)", String.class, tenant.toString());
+            work.accept(jdbc);
+            conn.commit();
+        } catch (SQLException e) {
+            throw new IllegalStateException("could not commit as tenant " + tenant, e);
+        }
     }
 
     /**

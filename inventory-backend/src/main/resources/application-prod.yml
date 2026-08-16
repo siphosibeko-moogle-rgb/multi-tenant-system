@@ -29,12 +29,33 @@ spring:
     password: ${DB_MIGRATION_PASSWORD}
     placeholders:
       appUserPassword: ${DB_APP_PASSWORD}
+      loginUserPassword: ${DB_LOGIN_PASSWORD}
 
   jpa:
     properties:
       hibernate:
         jdbc:
           time_zone: UTC
+
+# The login pool (V3's inventory_login). Required in prod, no defaults — same
+# rule as everything else in this file.
+#
+# DB_LOGIN_USER must be the narrow role V3 creates: SELECT on tenants and users
+# and nothing more. Pointing it at DB_APP_USER would hand the unscoped
+# login_read policy to the application pool and defeat the entire arrangement.
+app:
+  datasource:
+    login:
+      url: ${DB_LOGIN_URL:${DB_URL}}
+      username: ${DB_LOGIN_USER}
+      password: ${DB_LOGIN_PASSWORD}
+      hikari:
+        pool-name: inventory-login-pool
+        maximum-pool-size: ${DB_LOGIN_POOL_MAX:5}
+        # This pool never binds app.tenant_id, so it has no per-connection
+        # tenant state to leak. The lifetime cap is here for parity with the
+        # app pool rather than to bound a leak.
+        max-lifetime: ${DB_POOL_MAX_LIFETIME_MS:600000}
 
 management:
   endpoints:
