@@ -17,1898 +17,1922 @@ openapi: 3.1.0
 # =====================================================================
 
 info:
-title: Inventory Management API
-version: 1.0.0
-description: |
-Backend for a multi-tenant inventory platform for SMEs, consumed by an
-Android (Kotlin/Compose) client.
-license:
-name: Proprietary
+  title: Inventory Management API
+  version: 1.0.0
+  description: |
+    Backend for a multi-tenant inventory platform for SMEs, consumed by an
+    Android (Kotlin/Compose) client.
+  license:
+    name: Proprietary
+    # SPDX identifier. OpenAPI 3.1 treats this as optional, but swagger-parser
+    # reports its absence, and the alternative — teaching ApiContractTest to
+    # ignore parser messages — would also silence the dangling-$ref detection
+    # that makes the check worth having. LicenseRef-* is the SPDX form for a
+    # licence that is not on the SPDX list. Mutually exclusive with license.url,
+    # which is why there is no url here.
+    identifier: LicenseRef-Proprietary
 
 servers:
-- url: https://api.example.com/api/v1
-description: Production
-- url: http://localhost:8080/api/v1
-description: Local development
+  - url: https://api.example.com/api/v1
+    description: Production
+  - url: http://localhost:8080/api/v1
+    description: Local development
 
 security:
-- bearerAuth: []
+  - bearerAuth: []
 
 tags:
-- name: Authentication
-- name: Users
-- name: Catalog
-- name: Suppliers
-- name: Inventory
-- name: Sales
-- name: Purchasing
-- name: Forecasting
-- name: Reports
-- name: Sync
+  - name: Authentication
+  - name: Users
+  - name: Catalog
+  - name: Suppliers
+  - name: Inventory
+  - name: Sales
+  - name: Purchasing
+  - name: Forecasting
+  - name: Reports
+  - name: Sync
 
 paths:
 
-# ------------------------------------------------------------------
-# Authentication
-# ------------------------------------------------------------------
-# ---------------------------------------------------------------------
-# DECISIONS ON RECORD for /auth/register-tenant (M1)
-#
-# 409 on a taken slug DELIBERATELY DISCLOSES that a tenant with that slug
-# exists. This is accepted, not accidental:
-#   * it is the same disclosure any username-availability check makes, and
-#     the slug is a public identifier by design;
-#   * registration cannot pre-check availability anyway — it runs bound to a
-#     brand-new tenant id, so RLS hides the conflicting row. The UNIQUE index
-#     on tenants.slug is enforced physically, independent of RLS, which is
-#     why the collision surfaces at all;
-#   * the alternative is a silent failure that leaves the user unable to
-#     register and unable to find out why.
-# A primary-key collision returns the SAME 409 with the same body, so a
-# caller cannot distinguish the two or use it to confirm a guessed tenant id.
-#
-# The tenant id is generated server-side and is NEVER read from the request.
-# There is no field for one in TenantRegistrationRequest; a client that sends
-# tenantId/tenant_id/id anyway is ignored. See CLAUDE.md section 12.
-#
-# RATE LIMITED from M1, not M9: this endpoint is unauthenticated and creates
-# rows. Exceeding the limit returns 429 with Retry-After. Limits are per
-# instance, not per cluster.
-# ---------------------------------------------------------------------
-/auth/register-tenant:
-post:
-tags: [Authentication]
-summary: Sign up a new business and its first owner account
-security: []
-requestBody:
-required: true
-content:
-application/json:
-schema: { $ref: '#/components/schemas/TenantRegistrationRequest' }
-responses:
-'201':
-description: Tenant and owner created
-content:
-application/json:
-schema: { $ref: '#/components/schemas/AuthTokens' }
-'409': { $ref: '#/components/responses/Conflict' }
-'422': { $ref: '#/components/responses/ValidationFailed' }
-'429': { $ref: '#/components/responses/TooManyRequests' }
+  # ------------------------------------------------------------------
+  # Authentication
+  # ------------------------------------------------------------------
+  # DECISIONS ON RECORD for /auth/register-tenant (M1)
+  #
+  # 409 on a taken slug DELIBERATELY DISCLOSES that a tenant with that slug
+  # exists. Accepted, not accidental:
+  #   * it is the same disclosure any username-availability check makes, and
+  #     the slug is a public identifier by design;
+  #   * registration cannot pre-check availability anyway — it runs bound to a
+  #     brand-new tenant id, so RLS hides the conflicting row. The UNIQUE index
+  #     on tenants.slug is enforced physically, independent of RLS, which is why
+  #     the collision surfaces at all;
+  #   * the alternative is a silent failure that leaves the user unable to
+  #     register and unable to find out why.
+  # A primary-key collision returns the SAME 409 with the same body, so a caller
+  # cannot distinguish the two or use it to confirm a guessed tenant id.
+  #
+  # The tenant id is generated server-side and is NEVER read from the request.
+  # TenantRegistrationRequest has no field for one; a client that sends
+  # tenantId/tenant_id/id anyway is ignored. See CLAUDE.md section 12.
+  #
+  # RATE LIMITED from M1, not M9: this endpoint is unauthenticated and creates
+  # rows. Over the limit returns 429 with Retry-After. Per instance, not per
+  # cluster — see AuthRateLimiter.
+  /auth/register-tenant:
+    post:
+      tags: [Authentication]
+      summary: Sign up a new business and its first owner account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TenantRegistrationRequest' }
+      responses:
+        '201':
+          description: Tenant and owner created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokens' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
-/auth/login:
-post:
-tags: [Authentication]
-summary: Exchange credentials for an access + refresh token pair
-description: |
-Email is unique per tenant, not globally, so `tenantSlug` disambiguates.
-If it is omitted and the email resolves to exactly one tenant, that
-tenant is used; if it resolves to several, the response is 300 with the
-candidate list so the client can prompt. Never reveal whether an email
-exists on a failed login.
-security: []
-requestBody:
-required: true
-content:
-application/json:
-schema: { $ref: '#/components/schemas/LoginRequest' }
-responses:
-'200':
-description: Authenticated
-content:
-application/json:
-schema: { $ref: '#/components/schemas/AuthTokens' }
-'300':
-description: Email belongs to multiple tenants; pick one
-content:
-application/json:
-schema:
-type: object
-properties:
-tenants:
-type: array
-items: { $ref: '#/components/schemas/TenantSummary' }
-'401': { $ref: '#/components/responses/Unauthorized' }
-'429': { $ref: '#/components/responses/TooManyRequests' }
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Exchange credentials for an access + refresh token pair
+      description: |
+        Email is unique per tenant, not globally, so `tenantSlug` disambiguates.
+        If it is omitted and the email resolves to exactly one tenant, that
+        tenant is used; if it resolves to several, the response is 300 with the
+        candidate list so the client can prompt. Never reveal whether an email
+        exists on a failed login.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokens' }
+        '300':
+          description: Email belongs to multiple tenants; pick one
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenants:
+                    type: array
+                    items: { $ref: '#/components/schemas/TenantSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
-/auth/refresh:
-post:
-tags: [Authentication]
-summary: Rotate a refresh token
-description: |
-Refresh tokens are single-use and rotated. Presenting an already-used
-token invalidates the whole token family — that is the signal of a
-stolen token.
-security: []
-requestBody:
-required: true
-content:
-application/json:
-schema:
-type: object
-required: [refreshToken]
-properties:
-refreshToken: { type: string }
-responses:
-'200':
-description: New token pair
-content:
-application/json:
-schema: { $ref: '#/components/schemas/AuthTokens' }
-'401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Rotate a refresh token
+      description: |
+        Refresh tokens are single-use and rotated. Presenting an already-used
+        token invalidates the whole token family — that is the signal of a
+        stolen token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: New token pair
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthTokens' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
-/auth/logout:
-post:
-tags: [Authentication]
-summary: Revoke the current refresh token
-responses:
-'204': { description: Logged out }
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Revoke the current refresh token, or every session
+      description: |
+        Requires an access token — this is the one /auth endpoint without
+        `security: []`, and the implementation matches.
 
-/me:
-get:
-tags: [Users]
-summary: Current user, role and tenant settings
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema: { $ref: '#/components/schemas/CurrentUser' }
+        With a refresh token in the body, revokes that session ("sign out this
+        device"). With no body, revokes every live refresh token for the
+        authenticated user ("sign out everywhere").
 
-# ------------------------------------------------------------------
-# Users
-#
-# Read is owner + manager. Every MUTATION is owner-only.
-#
-# This header previously read "owner/manager only", which contradicted the
-# UserRole table below — that table gives "users" to owner and lists manager as
-# "catalog, purchasing, reports, adjustments", without users. The UserRole table
-# is the source of truth; this header was the half that was wrong.
-#
-# The reason mutations are owner-only: POST /users and PATCH /users/{userId}
-# both take a role. A manager holding either has a one-call path to owner —
-# invite an owner account, or promote themselves — so a manager who could write
-# here could take the business. Reading the team grants nothing, so it stays
-# open to manager.
-#
-# Enforced by @PreAuthorize in UsersController and asserted both ways (allow
-# AND deny, per role) in RoleEnforcementTest.
-# ------------------------------------------------------------------
-/users:
-get:
-tags: [Users]
-summary: List users in the tenant
-parameters:
-- $ref: '#/components/parameters/Cursor'
-- $ref: '#/components/parameters/Limit'
-- name: status
-in: query
-schema: { type: string, enum: [invited, active, disabled] }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-allOf:
-- $ref: '#/components/schemas/Page'
-- type: object
-properties:
-items:
-type: array
-items: { $ref: '#/components/schemas/User' }
-post:
-tags: [Users]
-summary: Invite a user
-requestBody:
-required: true
-content:
-application/json:
-schema: { $ref: '#/components/schemas/UserInviteRequest' }
-responses:
-'201':
-description: Invited
-content:
-application/json:
-schema: { $ref: '#/components/schemas/User' }
-'403': { $ref: '#/components/responses/Forbidden' }
-'409': { $ref: '#/components/responses/Conflict' }
+        Always 204, whether or not the token was still live. Reporting "already
+        revoked" would make logout an oracle for whether a stolen token works.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '204': { description: Logged out }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
-/users/{userId}:
-parameters: [ { $ref: '#/components/parameters/UserId' } ]
-patch:
-tags: [Users]
-summary: Change a user's role or status
-requestBody:
-required: true
-content:
-application/json:
-schema:
-type: object
-properties:
-role: { $ref: '#/components/schemas/UserRole' }
-status: { type: string, enum: [active, disabled] }
-fullName: { type: string }
-responses:
-'200':
-description: Updated
-content:
-application/json:
-schema: { $ref: '#/components/schemas/User' }
-'403': { $ref: '#/components/responses/Forbidden' }
-'404': { $ref: '#/components/responses/NotFound' }
-delete:
-tags: [Users]
-summary: Deactivate a user (soft delete)
-responses:
-'204': { description: Deactivated }
-'409':
-$ref: '#/components/responses/Conflict'
+  /me:
+    get:
+      tags: [Users]
+      summary: Current user, role and tenant settings
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CurrentUser' }
 
-# ------------------------------------------------------------------
-# Catalog
-# ------------------------------------------------------------------
-/products:
-get:
-tags: [Catalog]
-summary: Search and list products
-parameters:
-- $ref: '#/components/parameters/Cursor'
-- $ref: '#/components/parameters/Limit'
-- name: q
-in: query
-description: Free-text match on name, SKU or barcode
-schema: { type: string }
-- name: categoryId
-in: query
-schema: { type: string, format: uuid }
-- name: stockState
-in: query
-description: Filter by computed stock state
-schema: { type: string, enum: [ok, reorder, out_of_stock, unknown] }
-- name: active
-in: query
-schema: { type: boolean, default: true }
-- name: sort
-in: query
-schema: { type: string, enum: [name, sku, -updatedAt, quantityOnHand], default: name }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-allOf:
-- $ref: '#/components/schemas/Page'
-- type: object
-properties:
-items:
-type: array
-items: { $ref: '#/components/schemas/Product' }
-post:
-tags: [Catalog]
-summary: Create a product
-description: |
-`openingStock` is optional sugar: when present the server posts an
-`opening_balance` movement so the ledger stays the only way stock
-ever changes.
-requestBody:
-required: true
-content:
-application/json:
-schema: { $ref: '#/components/schemas/ProductWriteRequest' }
-responses:
-'201':
-description: Created
-content:
-application/json:
-schema: { $ref: '#/components/schemas/Product' }
-'409':
-description: SKU or barcode already used in this tenant
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
-'422': { $ref: '#/components/responses/ValidationFailed' }
+  # ------------------------------------------------------------------
+  # Users
+  #
+  # Read is owner + manager. Every MUTATION is owner-only.
+  #
+  # This header previously read "owner/manager only", which contradicted the
+  # UserRole schema below — that gives "users" to owner and lists manager as
+  # "catalog, purchasing, reports, adjustments", without users. UserRole is the
+  # source of truth; this header was the half that was wrong.
+  #
+  # Mutations are owner-only because POST /users and PATCH /users/{userId} both
+  # take a role. A manager holding either has a one-call path to owner — invite
+  # an owner account, or promote themselves — so a manager who could write here
+  # could take over the business. Reading the team grants nothing, so it stays
+  # open to manager.
+  #
+  # Enforced by @PreAuthorize in UsersController and asserted both ways (allow
+  # AND deny, per role) in RoleEnforcementTest.
+  # ------------------------------------------------------------------
+  /users:
+    get:
+      tags: [Users]
+      summary: List users in the tenant
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema: { type: string, enum: [invited, active, disabled] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/User' }
+    post:
+      tags: [Users]
+      summary: Invite a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserInviteRequest' }
+      responses:
+        '201':
+          description: Invited
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
-/products/{productId}:
-parameters: [ { $ref: '#/components/parameters/ProductId' } ]
-get:
-tags: [Catalog]
-summary: Get one product with stock and current forecast
-responses:
-'200':
-description: OK
-headers:
-ETag:
-description: Opaque version, send back as If-Match on update
-schema: { type: string }
-content:
-application/json:
-schema: { $ref: '#/components/schemas/ProductDetail' }
-'404': { $ref: '#/components/responses/NotFound' }
-patch:
-tags: [Catalog]
-summary: Update a product
-parameters: [ { $ref: '#/components/parameters/IfMatch' } ]
-requestBody:
-required: true
-content:
-application/json:
-schema: { $ref: '#/components/schemas/ProductWriteRequest' }
-responses:
-'200':
-description: Updated
-content:
-application/json:
-schema: { $ref: '#/components/schemas/Product' }
-'412': { $ref: '#/components/responses/PreconditionFailed' }
-delete:
-tags: [Catalog]
-summary: Archive a product (soft delete; history is preserved)
-responses:
-'204': { description: Archived }
+  /users/{userId}:
+    parameters: [ { $ref: '#/components/parameters/UserId' } ]
+    patch:
+      tags: [Users]
+      summary: Change a user's role or status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { $ref: '#/components/schemas/UserRole' }
+                status: { type: string, enum: [active, disabled] }
+                fullName: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Users]
+      summary: Deactivate a user (soft delete)
+      responses:
+        '204': { description: Deactivated }
+        '409':
+          $ref: '#/components/responses/Conflict'
 
-/products/lookup:
-get:
-tags: [Catalog]
-summary: Resolve a scanned barcode to a product
-description: Hot path for the Android scanner; kept separate so it can be cached hard.
-parameters:
-- name: barcode
-in: query
-required: true
-schema: { type: string }
-responses:
-'200':
-description: Found
-content:
-application/json:
-schema: { $ref: '#/components/schemas/Product' }
-'404': { $ref: '#/components/responses/NotFound' }
+  # ------------------------------------------------------------------
+  # Catalog
+  # ------------------------------------------------------------------
+  /products:
+    get:
+      tags: [Catalog]
+      summary: Search and list products
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: q
+          in: query
+          description: Free-text match on name, SKU or barcode
+          schema: { type: string }
+        - name: categoryId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: stockState
+          in: query
+          description: Filter by computed stock state
+          schema: { type: string, enum: [ok, reorder, out_of_stock, unknown] }
+        - name: active
+          in: query
+          schema: { type: boolean, default: true }
+        - name: sort
+          in: query
+          schema: { type: string, enum: [name, sku, -updatedAt, quantityOnHand], default: name }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Product' }
+    post:
+      tags: [Catalog]
+      summary: Create a product
+      description: |
+        `openingStock` is optional sugar: when present the server posts an
+        `opening_balance` movement so the ledger stays the only way stock
+        ever changes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductWriteRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '409':
+          description: SKU or barcode already used in this tenant
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
-/categories:
-get:
-tags: [Catalog]
-summary: List categories
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-type: array
-items: { $ref: '#/components/schemas/Category' }
-post:
-tags: [Catalog]
-summary: Create a category
-requestBody:
-required: true
-content:
-application/json:
-schema:
-type: object
-required: [name]
-properties:
-name: { type: string }
-parentId: { type: string, format: uuid, nullable: true }
-responses:
-'201':
-description: Created
-content:
-application/json:
-schema: { $ref: '#/components/schemas/Category' }
+  /products/{productId}:
+    parameters: [ { $ref: '#/components/parameters/ProductId' } ]
+    get:
+      tags: [Catalog]
+      summary: Get one product with stock and current forecast
+      responses:
+        '200':
+          description: OK
+          headers:
+            ETag:
+              description: Opaque version, send back as If-Match on update
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Catalog]
+      summary: Update a product
+      parameters: [ { $ref: '#/components/parameters/IfMatch' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductWriteRequest' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+    delete:
+      tags: [Catalog]
+      summary: Archive a product (soft delete; history is preserved)
+      responses:
+        '204': { description: Archived }
 
-/locations:
-get:
-tags: [Catalog]
-summary: List stock locations
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-type: array
-items: { $ref: '#/components/schemas/Location' }
-post:
-tags: [Catalog]
-summary: Create a location
-requestBody:
-required: true
-content:
-application/json:
-schema:
-type: object
-required: [name]
-properties:
-name: { type: string }
-address: { type: string }
-isDefault: { type: boolean, default: false }
-responses:
-'201':
-description: Created
-content:
-application/json:
-schema: { $ref: '#/components/schemas/Location' }
+  /products/lookup:
+    get:
+      tags: [Catalog]
+      summary: Resolve a scanned barcode to a product
+      description: Hot path for the Android scanner; kept separate so it can be cached hard.
+      parameters:
+        - name: barcode
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
-# ------------------------------------------------------------------
-# Suppliers
-# ------------------------------------------------------------------
-/suppliers:
-get:
-tags: [Suppliers]
-summary: List suppliers
-parameters:
-- $ref: '#/components/parameters/Cursor'
-- $ref: '#/components/parameters/Limit'
-- name: q
-in: query
-schema: { type: string }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-allOf:
-- $ref: '#/components/schemas/Page'
-- type: object
-properties:
-items:
-type: array
-items: { $ref: '#/components/schemas/Supplier' }
-post:
-tags: [Suppliers]
-summary: Create a supplier
-requestBody:
-required: true
-content:
-application/json:
-schema: { $ref: '#/components/schemas/SupplierWriteRequest' }
-responses:
-'201':
-description: Created
-content:
-application/json:
-schema: { $ref: '#/components/schemas/Supplier' }
+  /categories:
+    get:
+      tags: [Catalog]
+      summary: List categories
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Category' }
+    post:
+      tags: [Catalog]
+      summary: Create a category
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                parentId: { type: string, format: uuid, nullable: true }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Category' }
 
-/suppliers/{supplierId}:
-parameters: [ { $ref: '#/components/parameters/SupplierId' } ]
-get:
-tags: [Suppliers]
-summary: Get a supplier, including observed lead time performance
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema: { $ref: '#/components/schemas/SupplierDetail' }
-'404': { $ref: '#/components/responses/NotFound' }
-patch:
-tags: [Suppliers]
-summary: Update a supplier
-requestBody:
-required: true
-content:
-application/json:
-schema: { $ref: '#/components/schemas/SupplierWriteRequest' }
-responses:
-'200':
-description: Updated
-content:
-application/json:
-schema: { $ref: '#/components/schemas/Supplier' }
+  /locations:
+    get:
+      tags: [Catalog]
+      summary: List stock locations
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Location' }
+    post:
+      tags: [Catalog]
+      summary: Create a location
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                address: { type: string }
+                isDefault: { type: boolean, default: false }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Location' }
 
-/products/{productId}/suppliers:
-parameters: [ { $ref: '#/components/parameters/ProductId' } ]
-get:
-tags: [Suppliers]
-summary: Who can supply this product, at what cost and lead time
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-type: array
-items: { $ref: '#/components/schemas/ProductSupplier' }
-put:
-tags: [Suppliers]
-summary: Replace the supplier list for a product
-requestBody:
-required: true
-content:
-application/json:
-schema:
-type: array
-items: { $ref: '#/components/schemas/ProductSupplierWrite' }
-responses:
-'200':
-description: Replaced
-content:
-application/json:
-schema:
-type: array
-items: { $ref: '#/components/schemas/ProductSupplier' }
+  # ------------------------------------------------------------------
+  # Suppliers
+  # ------------------------------------------------------------------
+  /suppliers:
+    get:
+      tags: [Suppliers]
+      summary: List suppliers
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: q
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Supplier' }
+    post:
+      tags: [Suppliers]
+      summary: Create a supplier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupplierWriteRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Supplier' }
 
-# ------------------------------------------------------------------
-# Inventory
-# ------------------------------------------------------------------
-/inventory:
-get:
-tags: [Inventory]
-summary: Stock status across products
-description: Backs the main inventory screen and the low-stock badge.
-parameters:
-- $ref: '#/components/parameters/Cursor'
-- $ref: '#/components/parameters/Limit'
-- $ref: '#/components/parameters/LocationIdQuery'
-- name: stockState
-in: query
-schema: { type: string, enum: [ok, reorder, out_of_stock, unknown] }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-allOf:
-- $ref: '#/components/schemas/Page'
-- type: object
-properties:
-items:
-type: array
-items: { $ref: '#/components/schemas/StockStatus' }
+  /suppliers/{supplierId}:
+    parameters: [ { $ref: '#/components/parameters/SupplierId' } ]
+    get:
+      tags: [Suppliers]
+      summary: Get a supplier, including observed lead time performance
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Suppliers]
+      summary: Update a supplier
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupplierWriteRequest' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Supplier' }
 
-/inventory/movements:
-get:
-tags: [Inventory]
-summary: Read the stock ledger
-parameters:
-- $ref: '#/components/parameters/Cursor'
-- $ref: '#/components/parameters/Limit'
-- name: productId
-in: query
-schema: { type: string, format: uuid }
-- $ref: '#/components/parameters/LocationIdQuery'
-- name: type
-in: query
-schema: { $ref: '#/components/schemas/MovementType' }
-- name: from
-in: query
-schema: { type: string, format: date-time }
-- name: to
-in: query
-schema: { type: string, format: date-time }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-allOf:
-- $ref: '#/components/schemas/Page'
-- type: object
-properties:
-items:
-type: array
-items: { $ref: '#/components/schemas/StockMovement' }
+  /products/{productId}/suppliers:
+    parameters: [ { $ref: '#/components/parameters/ProductId' } ]
+    get:
+      tags: [Suppliers]
+      summary: Who can supply this product, at what cost and lead time
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProductSupplier' }
+    put:
+      tags: [Suppliers]
+      summary: Replace the supplier list for a product
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: { $ref: '#/components/schemas/ProductSupplierWrite' }
+      responses:
+        '200':
+          description: Replaced
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProductSupplier' }
 
-/inventory/adjustments:
-post:
-tags: [Inventory]
-summary: Correct stock (damage, theft, recount)
-description: |
-Appends an `adjustment` movement. There is deliberately no endpoint to
-set an absolute quantity or to edit a past movement — corrections are
-always new signed rows, so the audit trail cannot be rewritten.
-parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
-requestBody:
-required: true
-content:
-application/json:
-schema: { $ref: '#/components/schemas/AdjustmentRequest' }
-responses:
-'201':
-description: Posted
-content:
-application/json:
-schema: { $ref: '#/components/schemas/StockMovement' }
-'409': { $ref: '#/components/responses/InsufficientStock' }
+  # ------------------------------------------------------------------
+  # Inventory
+  # ------------------------------------------------------------------
+  /inventory:
+    get:
+      tags: [Inventory]
+      summary: Stock status across products
+      description: Backs the main inventory screen and the low-stock badge.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/LocationIdQuery'
+        - name: stockState
+          in: query
+          schema: { type: string, enum: [ok, reorder, out_of_stock, unknown] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/StockStatus' }
 
-/inventory/transfers:
-post:
-tags: [Inventory]
-summary: Move stock between locations
-parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
-requestBody:
-required: true
-content:
-application/json:
-schema:
-type: object
-required: [productId, fromLocationId, toLocationId, quantity]
-properties:
-productId: { type: string, format: uuid }
-fromLocationId: { type: string, format: uuid }
-toLocationId: { type: string, format: uuid }
-quantity: { type: number, exclusiveMinimum: 0 }
-reason: { type: string }
-responses:
-'201':
-description: Transferred (two paired movements)
-content:
-application/json:
-schema:
-type: array
-items: { $ref: '#/components/schemas/StockMovement' }
-'409': { $ref: '#/components/responses/InsufficientStock' }
+  /inventory/movements:
+    get:
+      tags: [Inventory]
+      summary: Read the stock ledger
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: productId
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/LocationIdQuery'
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/MovementType' }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/StockMovement' }
 
-/stocktakes:
-post:
-tags: [Inventory]
-summary: Start a physical count
-requestBody:
-required: true
-content:
-application/json:
-schema:
-type: object
-required: [locationId]
-properties:
-locationId: { type: string, format: uuid }
-reference: { type: string }
-responses:
-'201':
-description: Started
-content:
-application/json:
-schema: { $ref: '#/components/schemas/Stocktake' }
+  /inventory/adjustments:
+    post:
+      tags: [Inventory]
+      summary: Correct stock (damage, theft, recount)
+      description: |
+        Appends an `adjustment` movement. There is deliberately no endpoint to
+        set an absolute quantity or to edit a past movement — corrections are
+        always new signed rows, so the audit trail cannot be rewritten.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdjustmentRequest' }
+      responses:
+        '201':
+          description: Posted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StockMovement' }
+        '409': { $ref: '#/components/responses/InsufficientStock' }
 
-/stocktakes/{stocktakeId}/lines:
-parameters:
-- name: stocktakeId
-in: path
-required: true
-schema: { type: string, format: uuid }
-put:
-tags: [Inventory]
-summary: Submit counted quantities (upsert, batchable for offline counts)
-requestBody:
-required: true
-content:
-application/json:
-schema:
-type: array
-items:
-type: object
-required: [productId, countedQty]
-properties:
-productId: { type: string, format: uuid }
-countedQty: { type: number, minimum: 0 }
-note: { type: string }
-responses:
-'200':
-description: Saved, with computed variances
-content:
-application/json:
-schema:
-type: array
-items: { $ref: '#/components/schemas/StocktakeLine' }
+  /inventory/transfers:
+    post:
+      tags: [Inventory]
+      summary: Move stock between locations
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, fromLocationId, toLocationId, quantity]
+              properties:
+                productId: { type: string, format: uuid }
+                fromLocationId: { type: string, format: uuid }
+                toLocationId: { type: string, format: uuid }
+                quantity: { type: number, exclusiveMinimum: 0 }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Transferred (two paired movements)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/StockMovement' }
+        '409': { $ref: '#/components/responses/InsufficientStock' }
 
-/stocktakes/{stocktakeId}/complete:
-parameters:
-- name: stocktakeId
-in: path
-required: true
-schema: { type: string, format: uuid }
-post:
-tags: [Inventory]
-summary: Approve the count and post variance movements
-responses:
-'200':
-description: Completed
-content:
-application/json:
-schema: { $ref: '#/components/schemas/Stocktake' }
-'409':
-description: Already completed
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
+  /stocktakes:
+    post:
+      tags: [Inventory]
+      summary: Start a physical count
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [locationId]
+              properties:
+                locationId: { type: string, format: uuid }
+                reference: { type: string }
+      responses:
+        '201':
+          description: Started
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stocktake' }
 
-# ------------------------------------------------------------------
-# Sales
-# ------------------------------------------------------------------
-/sales:
-get:
-tags: [Sales]
-summary: List sales
-parameters:
-- $ref: '#/components/parameters/Cursor'
-- $ref: '#/components/parameters/Limit'
-- name: from
-in: query
-schema: { type: string, format: date }
-- name: to
-in: query
-schema: { type: string, format: date }
-- name: status
-in: query
-schema: { type: string, enum: [draft, completed, voided, refunded] }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-allOf:
-- $ref: '#/components/schemas/Page'
-- type: object
-properties:
-items:
-type: array
-items: { $ref: '#/components/schemas/Sale' }
-post:
-tags: [Sales]
-summary: Record a sale
-description: |
-Atomic: the sale, its lines and one `sale` movement per line are written
-in a single transaction. If any line would oversell, the whole sale is
-rejected with 409 and nothing is persisted.
+  /stocktakes/{stocktakeId}/lines:
+    parameters:
+      - name: stocktakeId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      tags: [Inventory]
+      summary: Submit counted quantities (upsert, batchable for offline counts)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                required: [productId, countedQty]
+                properties:
+                  productId: { type: string, format: uuid }
+                  countedQty: { type: number, minimum: 0 }
+                  note: { type: string }
+      responses:
+        '200':
+          description: Saved, with computed variances
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/StocktakeLine' }
 
-`clientRequestId` in the body (or the `Idempotency-Key` header) makes a
-retry return the original sale rather than double-counting stock —
-essential when a phone loses signal mid-request.
-parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
-requestBody:
-required: true
-content:
-application/json:
-schema: { $ref: '#/components/schemas/SaleWriteRequest' }
-responses:
-'201':
-description: Recorded
-content:
-application/json:
-schema: { $ref: '#/components/schemas/SaleDetail' }
-'200':
-description: Idempotent replay of an already-recorded sale
-content:
-application/json:
-schema: { $ref: '#/components/schemas/SaleDetail' }
-'409': { $ref: '#/components/responses/InsufficientStock' }
-'422': { $ref: '#/components/responses/ValidationFailed' }
+  /stocktakes/{stocktakeId}/complete:
+    parameters:
+      - name: stocktakeId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Inventory]
+      summary: Approve the count and post variance movements
+      responses:
+        '200':
+          description: Completed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stocktake' }
+        '409':
+          description: Already completed
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
-/sales/{saleId}:
-parameters: [ { $ref: '#/components/parameters/SaleId' } ]
-get:
-tags: [Sales]
-summary: Get a sale with its lines
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema: { $ref: '#/components/schemas/SaleDetail' }
-'404': { $ref: '#/components/responses/NotFound' }
+  # ------------------------------------------------------------------
+  # Sales
+  # ------------------------------------------------------------------
+  /sales:
+    get:
+      tags: [Sales]
+      summary: List sales
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: status
+          in: query
+          schema: { type: string, enum: [draft, completed, voided, refunded] }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Sale' }
+    post:
+      tags: [Sales]
+      summary: Record a sale
+      description: |
+        Atomic: the sale, its lines and one `sale` movement per line are written
+        in a single transaction. If any line would oversell, the whole sale is
+        rejected with 409 and nothing is persisted.
 
-/sales/{saleId}/void:
-parameters: [ { $ref: '#/components/parameters/SaleId' } ]
-post:
-tags: [Sales]
-summary: Void a sale and return its stock
-description: Posts compensating `sale_return` movements. The original sale row is never deleted.
-requestBody:
-content:
-application/json:
-schema:
-type: object
-properties:
-reason: { type: string }
-responses:
-'200':
-description: Voided
-content:
-application/json:
-schema: { $ref: '#/components/schemas/SaleDetail' }
-'409':
-description: Sale is not in a voidable state
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
+        `clientRequestId` in the body (or the `Idempotency-Key` header) makes a
+        retry return the original sale rather than double-counting stock —
+        essential when a phone loses signal mid-request.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SaleWriteRequest' }
+      responses:
+        '201':
+          description: Recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SaleDetail' }
+        '200':
+          description: Idempotent replay of an already-recorded sale
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SaleDetail' }
+        '409': { $ref: '#/components/responses/InsufficientStock' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
-/sales/{saleId}/returns:
-parameters: [ { $ref: '#/components/parameters/SaleId' } ]
-post:
-tags: [Sales]
-summary: Return part of a sale
-parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
-requestBody:
-required: true
-content:
-application/json:
-schema:
-type: object
-required: [lines]
-properties:
-reason: { type: string }
-restock: { type: boolean, default: true, description: False for damaged goods }
-lines:
-type: array
-minItems: 1
-items:
-type: object
-required: [productId, quantity]
-properties:
-productId: { type: string, format: uuid }
-quantity: { type: number, exclusiveMinimum: 0 }
-responses:
-'201':
-description: Return recorded
-content:
-application/json:
-schema: { $ref: '#/components/schemas/SaleDetail' }
+  /sales/{saleId}:
+    parameters: [ { $ref: '#/components/parameters/SaleId' } ]
+    get:
+      tags: [Sales]
+      summary: Get a sale with its lines
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SaleDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
-# ------------------------------------------------------------------
-# Purchasing
-# ------------------------------------------------------------------
-/purchase-orders:
-get:
-tags: [Purchasing]
-summary: List purchase orders
-parameters:
-- $ref: '#/components/parameters/Cursor'
-- $ref: '#/components/parameters/Limit'
-- name: status
-in: query
-schema: { type: string, enum: [draft, ordered, partial, received, cancelled] }
-- name: supplierId
-in: query
-schema: { type: string, format: uuid }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-allOf:
-- $ref: '#/components/schemas/Page'
-- type: object
-properties:
-items:
-type: array
-items: { $ref: '#/components/schemas/PurchaseOrder' }
-post:
-tags: [Purchasing]
-summary: Create a purchase order
-description: Pass `fromRecommendationIds` to build a PO straight from reorder advice.
-requestBody:
-required: true
-content:
-application/json:
-schema: { $ref: '#/components/schemas/PurchaseOrderWriteRequest' }
-responses:
-'201':
-description: Created
-content:
-application/json:
-schema: { $ref: '#/components/schemas/PurchaseOrderDetail' }
+  /sales/{saleId}/void:
+    parameters: [ { $ref: '#/components/parameters/SaleId' } ]
+    post:
+      tags: [Sales]
+      summary: Void a sale and return its stock
+      description: Posts compensating `sale_return` movements. The original sale row is never deleted.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: Voided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SaleDetail' }
+        '409':
+          description: Sale is not in a voidable state
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
-/purchase-orders/{poId}:
-parameters: [ { $ref: '#/components/parameters/PoId' } ]
-get:
-tags: [Purchasing]
-summary: Get a purchase order with its lines
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema: { $ref: '#/components/schemas/PurchaseOrderDetail' }
-'404': { $ref: '#/components/responses/NotFound' }
+  /sales/{saleId}/returns:
+    parameters: [ { $ref: '#/components/parameters/SaleId' } ]
+    post:
+      tags: [Sales]
+      summary: Return part of a sale
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lines]
+              properties:
+                reason: { type: string }
+                restock: { type: boolean, default: true, description: False for damaged goods }
+                lines:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [productId, quantity]
+                    properties:
+                      productId: { type: string, format: uuid }
+                      quantity: { type: number, exclusiveMinimum: 0 }
+      responses:
+        '201':
+          description: Return recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SaleDetail' }
 
-/purchase-orders/{poId}/submit:
-parameters: [ { $ref: '#/components/parameters/PoId' } ]
-post:
-tags: [Purchasing]
-summary: Mark the order as placed with the supplier
-description: Stamps `orderedAt`, which starts the lead-time clock for forecasting.
-responses:
-'200':
-description: Ordered
-content:
-application/json:
-schema: { $ref: '#/components/schemas/PurchaseOrderDetail' }
+  # ------------------------------------------------------------------
+  # Purchasing
+  # ------------------------------------------------------------------
+  /purchase-orders:
+    get:
+      tags: [Purchasing]
+      summary: List purchase orders
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema: { type: string, enum: [draft, ordered, partial, received, cancelled] }
+        - name: supplierId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/PurchaseOrder' }
+    post:
+      tags: [Purchasing]
+      summary: Create a purchase order
+      description: Pass `fromRecommendationIds` to build a PO straight from reorder advice.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PurchaseOrderWriteRequest' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrderDetail' }
 
-/purchase-orders/{poId}/receipts:
-parameters: [ { $ref: '#/components/parameters/PoId' } ]
-post:
-tags: [Purchasing]
-summary: Receive stock against the order (supports partial deliveries)
-description: |
-Posts `purchase_receipt` movements and records an observed lead time,
-which feeds back into the supplier's average and variability.
-parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
-requestBody:
-required: true
-content:
-application/json:
-schema:
-type: object
-required: [lines]
-properties:
-receivedAt: { type: string, format: date-time }
-lines:
-type: array
-minItems: 1
-items:
-type: object
-required: [productId, quantityReceived]
-properties:
-productId: { type: string, format: uuid }
-quantityReceived: { type: number, exclusiveMinimum: 0 }
-unitCost: { type: number, minimum: 0 }
-responses:
-'201':
-description: Received
-content:
-application/json:
-schema: { $ref: '#/components/schemas/PurchaseOrderDetail' }
-'409':
-description: Receipt exceeds ordered quantity, or order is cancelled
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
+  /purchase-orders/{poId}:
+    parameters: [ { $ref: '#/components/parameters/PoId' } ]
+    get:
+      tags: [Purchasing]
+      summary: Get a purchase order with its lines
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrderDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
-# ------------------------------------------------------------------
-# Forecasting
-# ------------------------------------------------------------------
-/forecasts:
-get:
-tags: [Forecasting]
-summary: Current forecasts for all products
-parameters:
-- $ref: '#/components/parameters/Cursor'
-- $ref: '#/components/parameters/Limit'
-- $ref: '#/components/parameters/LocationIdQuery'
-- name: horizonDays
-in: query
-schema: { type: integer, default: 14, minimum: 1, maximum: 365 }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-allOf:
-- $ref: '#/components/schemas/Page'
-- type: object
-properties:
-items:
-type: array
-items: { $ref: '#/components/schemas/Forecast' }
+  /purchase-orders/{poId}/submit:
+    parameters: [ { $ref: '#/components/parameters/PoId' } ]
+    post:
+      tags: [Purchasing]
+      summary: Mark the order as placed with the supplier
+      description: Stamps `orderedAt`, which starts the lead-time clock for forecasting.
+      responses:
+        '200':
+          description: Ordered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrderDetail' }
 
-/products/{productId}/forecast:
-parameters: [ { $ref: '#/components/parameters/ProductId' } ]
-get:
-tags: [Forecasting]
-summary: Forecast for one product, with the demand history behind it
-description: |
-Returns `method: insufficient_data` and a null `projectedStockoutOn`
-when there is too little history to be honest about — the app should
-show "still learning", not a confident number.
-parameters:
-- name: includeHistory
-in: query
-schema: { type: boolean, default: false }
-- $ref: '#/components/parameters/LocationIdQuery'
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema: { $ref: '#/components/schemas/ForecastDetail' }
-'404': { $ref: '#/components/responses/NotFound' }
+  /purchase-orders/{poId}/receipts:
+    parameters: [ { $ref: '#/components/parameters/PoId' } ]
+    post:
+      tags: [Purchasing]
+      summary: Receive stock against the order (supports partial deliveries)
+      description: |
+        Posts `purchase_receipt` movements and records an observed lead time,
+        which feeds back into the supplier's average and variability.
+      parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lines]
+              properties:
+                receivedAt: { type: string, format: date-time }
+                lines:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [productId, quantityReceived]
+                    properties:
+                      productId: { type: string, format: uuid }
+                      quantityReceived: { type: number, exclusiveMinimum: 0 }
+                      unitCost: { type: number, minimum: 0 }
+      responses:
+        '201':
+          description: Received
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrderDetail' }
+        '409':
+          description: Receipt exceeds ordered quantity, or order is cancelled
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
-/forecasts/recompute:
-post:
-tags: [Forecasting]
-summary: Force a recompute (normally runs nightly)
-requestBody:
-content:
-application/json:
-schema:
-type: object
-properties:
-productIds:
-type: array
-items: { type: string, format: uuid }
-description: Omit to recompute the whole catalog
-responses:
-'202':
-description: Accepted; runs asynchronously
-content:
-application/json:
-schema:
-type: object
-properties:
-jobId: { type: string, format: uuid }
-queuedProducts: { type: integer }
+  # ------------------------------------------------------------------
+  # Forecasting
+  # ------------------------------------------------------------------
+  /forecasts:
+    get:
+      tags: [Forecasting]
+      summary: Current forecasts for all products
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/LocationIdQuery'
+        - name: horizonDays
+          in: query
+          schema: { type: integer, default: 14, minimum: 1, maximum: 365 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Forecast' }
 
-/reorder-recommendations:
-get:
-tags: [Forecasting]
-summary: What to reorder, how much, and why
-parameters:
-- $ref: '#/components/parameters/Cursor'
-- $ref: '#/components/parameters/Limit'
-- name: status
-in: query
-schema: { type: string, enum: [open, ordered, dismissed, expired], default: open }
-- name: supplierId
-in: query
-description: Group a single order to one supplier
-schema: { type: string, format: uuid }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-allOf:
-- $ref: '#/components/schemas/Page'
-- type: object
-properties:
-items:
-type: array
-items: { $ref: '#/components/schemas/ReorderRecommendation' }
+  /products/{productId}/forecast:
+    parameters: [ { $ref: '#/components/parameters/ProductId' } ]
+    get:
+      tags: [Forecasting]
+      summary: Forecast for one product, with the demand history behind it
+      description: |
+        Returns `method: insufficient_data` and a null `projectedStockoutOn`
+        when there is too little history to be honest about — the app should
+        show "still learning", not a confident number.
+      parameters:
+        - name: includeHistory
+          in: query
+          schema: { type: boolean, default: false }
+        - $ref: '#/components/parameters/LocationIdQuery'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ForecastDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
-/reorder-recommendations/{recommendationId}/dismiss:
-parameters:
-- name: recommendationId
-in: path
-required: true
-schema: { type: string, format: uuid }
-post:
-tags: [Forecasting]
-summary: Dismiss a recommendation
-requestBody:
-content:
-application/json:
-schema:
-type: object
-properties:
-reason: { type: string }
-responses:
-'204': { description: Dismissed }
+  /forecasts/recompute:
+    post:
+      tags: [Forecasting]
+      summary: Force a recompute (normally runs nightly)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                productIds:
+                  type: array
+                  items: { type: string, format: uuid }
+                  description: Omit to recompute the whole catalog
+      responses:
+        '202':
+          description: Accepted; runs asynchronously
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string, format: uuid }
+                  queuedProducts: { type: integer }
 
-# ------------------------------------------------------------------
-# Reports
-# ------------------------------------------------------------------
-/reports/dashboard:
-get:
-tags: [Reports]
-summary: Home screen summary
-parameters:
-- name: period
-in: query
-schema: { type: string, enum: [today, week, month], default: week }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema: { $ref: '#/components/schemas/DashboardSummary' }
+  /reorder-recommendations:
+    get:
+      tags: [Forecasting]
+      summary: What to reorder, how much, and why
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, ordered, dismissed, expired], default: open }
+        - name: supplierId
+          in: query
+          description: Group a single order to one supplier
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/ReorderRecommendation' }
 
-/reports/sales-summary:
-get:
-tags: [Reports]
-summary: Sales totals bucketed over time
-parameters:
-- name: from
-in: query
-required: true
-schema: { type: string, format: date }
-- name: to
-in: query
-required: true
-schema: { type: string, format: date }
-- name: groupBy
-in: query
-schema: { type: string, enum: [day, week, month], default: day }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-type: object
-properties:
-buckets:
-type: array
-items:
-type: object
-properties:
-periodStart: { type: string, format: date }
-unitsSold: { type: number }
-revenue: { type: number }
-grossProfit: { type: number }
+  /reorder-recommendations/{recommendationId}/dismiss:
+    parameters:
+      - name: recommendationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Forecasting]
+      summary: Dismiss a recommendation
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '204': { description: Dismissed }
 
-/reports/inventory-valuation:
-get:
-tags: [Reports]
-summary: What the stock on hand is worth
-parameters:
-- $ref: '#/components/parameters/LocationIdQuery'
-- name: asOf
-in: query
-description: Valuation at a past date, replayed from the ledger
-schema: { type: string, format: date }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-type: object
-properties:
-totalCostValue: { type: number }
-totalRetailValue: { type: number }
-productCount: { type: integer }
-asOf: { type: string, format: date }
+  # ------------------------------------------------------------------
+  # Reports
+  # ------------------------------------------------------------------
+  /reports/dashboard:
+    get:
+      tags: [Reports]
+      summary: Home screen summary
+      parameters:
+        - name: period
+          in: query
+          schema: { type: string, enum: [today, week, month], default: week }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardSummary' }
 
-/reports/top-products:
-get:
-tags: [Reports]
-summary: Best and worst movers
-parameters:
-- name: from
-in: query
-schema: { type: string, format: date }
-- name: to
-in: query
-schema: { type: string, format: date }
-- name: order
-in: query
-schema: { type: string, enum: [best, worst], default: best }
-- $ref: '#/components/parameters/Limit'
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-type: array
-items:
-type: object
-properties:
-productId: { type: string, format: uuid }
-sku: { type: string }
-name: { type: string }
-unitsSold: { type: number }
-revenue: { type: number }
-grossMarginPct: { type: number }
+  /reports/sales-summary:
+    get:
+      tags: [Reports]
+      summary: Sales totals bucketed over time
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: groupBy
+          in: query
+          schema: { type: string, enum: [day, week, month], default: day }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  buckets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        periodStart: { type: string, format: date }
+                        unitsSold: { type: number }
+                        revenue: { type: number }
+                        grossProfit: { type: number }
 
-# ------------------------------------------------------------------
-# Sync (offline support for the Android client)
-# ------------------------------------------------------------------
-/sync/changes:
-get:
-tags: [Sync]
-summary: Everything that changed since a watermark
-description: |
-Lets the app keep a local Room cache warm without refetching the
-catalog. Returns tombstones for deletions and a new `syncToken`.
-Sales created offline are pushed back through POST /sales with a
-`clientRequestId`, so replays are safe.
-parameters:
-- name: since
-in: query
-description: Opaque token from the previous sync; omit for a full snapshot
-schema: { type: string }
-responses:
-'200':
-description: OK
-content:
-application/json:
-schema:
-type: object
-properties:
-syncToken: { type: string }
-hasMore: { type: boolean }
-products:
-type: array
-items: { $ref: '#/components/schemas/Product' }
-categories:
-type: array
-items: { $ref: '#/components/schemas/Category' }
-suppliers:
-type: array
-items: { $ref: '#/components/schemas/Supplier' }
-stock:
-type: array
-items: { $ref: '#/components/schemas/StockStatus' }
-deleted:
-type: array
-items:
-type: object
-properties:
-entityType: { type: string }
-id: { type: string, format: uuid }
+  /reports/inventory-valuation:
+    get:
+      tags: [Reports]
+      summary: What the stock on hand is worth
+      parameters:
+        - $ref: '#/components/parameters/LocationIdQuery'
+        - name: asOf
+          in: query
+          description: Valuation at a past date, replayed from the ledger
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalCostValue: { type: number }
+                  totalRetailValue: { type: number }
+                  productCount: { type: integer }
+                  asOf: { type: string, format: date }
+
+  /reports/top-products:
+    get:
+      tags: [Reports]
+      summary: Best and worst movers
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: order
+          in: query
+          schema: { type: string, enum: [best, worst], default: best }
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    productId: { type: string, format: uuid }
+                    sku: { type: string }
+                    name: { type: string }
+                    unitsSold: { type: number }
+                    revenue: { type: number }
+                    grossMarginPct: { type: number }
+
+  # ------------------------------------------------------------------
+  # Sync (offline support for the Android client)
+  # ------------------------------------------------------------------
+  /sync/changes:
+    get:
+      tags: [Sync]
+      summary: Everything that changed since a watermark
+      description: |
+        Lets the app keep a local Room cache warm without refetching the
+        catalog. Returns tombstones for deletions and a new `syncToken`.
+        Sales created offline are pushed back through POST /sales with a
+        `clientRequestId`, so replays are safe.
+      parameters:
+        - name: since
+          in: query
+          description: Opaque token from the previous sync; omit for a full snapshot
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  syncToken: { type: string }
+                  hasMore: { type: boolean }
+                  products:
+                    type: array
+                    items: { $ref: '#/components/schemas/Product' }
+                  categories:
+                    type: array
+                    items: { $ref: '#/components/schemas/Category' }
+                  suppliers:
+                    type: array
+                    items: { $ref: '#/components/schemas/Supplier' }
+                  stock:
+                    type: array
+                    items: { $ref: '#/components/schemas/StockStatus' }
+                  deleted:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        entityType: { type: string }
+                        id: { type: string, format: uuid }
 
 components:
 
-securitySchemes:
-bearerAuth:
-type: http
-scheme: bearer
-bearerFormat: JWT
-description: |
-Access token, 15 minute TTL. Claims: `sub` (user id), `tid` (tenant id),
-`role`, `jti`. The server trusts `tid` from the signed token only.
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Access token, 15 minute TTL. Claims: `sub` (user id), `tid` (tenant id),
+        `role`, `jti`. The server trusts `tid` from the signed token only.
 
-parameters:
-Cursor:
-name: cursor
-in: query
-schema: { type: string }
-Limit:
-name: limit
-in: query
-schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
-IfMatch:
-name: If-Match
-in: header
-description: ETag from a prior GET; rejects a write over someone else's edit
-schema: { type: string }
-IdempotencyKey:
-name: Idempotency-Key
-in: header
-description: Client-generated UUID; a replay returns the original result
-schema: { type: string, format: uuid }
-LocationIdQuery:
-name: locationId
-in: query
-description: Defaults to the tenant's default location
-schema: { type: string, format: uuid }
-ProductId:
-name: productId
-in: path
-required: true
-schema: { type: string, format: uuid }
-SupplierId:
-name: supplierId
-in: path
-required: true
-schema: { type: string, format: uuid }
-SaleId:
-name: saleId
-in: path
-required: true
-schema: { type: string, format: uuid }
-PoId:
-name: poId
-in: path
-required: true
-schema: { type: string, format: uuid }
-UserId:
-name: userId
-in: path
-required: true
-schema: { type: string, format: uuid }
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+    IfMatch:
+      name: If-Match
+      in: header
+      description: ETag from a prior GET; rejects a write over someone else's edit
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: Client-generated UUID; a replay returns the original result
+      schema: { type: string, format: uuid }
+    LocationIdQuery:
+      name: locationId
+      in: query
+      description: Defaults to the tenant's default location
+      schema: { type: string, format: uuid }
+    ProductId:
+      name: productId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SupplierId:
+      name: supplierId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SaleId:
+      name: saleId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    PoId:
+      name: poId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
 
-responses:
-Unauthorized:
-description: Missing, expired or invalid token
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
-Forbidden:
-description: Authenticated but the role is not permitted
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
-NotFound:
-description: |
-Not found in this tenant. Note that a resource belonging to another
-tenant also returns 404, never 403 — a 403 would confirm the id exists.
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
-Conflict:
-description: Conflicts with existing state
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
-PreconditionFailed:
-description: If-Match did not match; the resource changed underneath you
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
-ValidationFailed:
-description: Field-level validation errors
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
-TooManyRequests:
-description: Rate limited
-content:
-application/problem+json:
-schema: { $ref: '#/components/schemas/Problem' }
-InsufficientStock:
-description: The operation would drive stock negative
-content:
-application/problem+json:
-schema:
-allOf:
-- $ref: '#/components/schemas/Problem'
-- type: object
-properties:
-productId: { type: string, format: uuid }
-requested: { type: number }
-available: { type: number }
+  responses:
+    Unauthorized:
+      description: Missing, expired or invalid token
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Forbidden:
+      description: Authenticated but the role is not permitted
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    NotFound:
+      description: |
+        Not found in this tenant. Note that a resource belonging to another
+        tenant also returns 404, never 403 — a 403 would confirm the id exists.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    Conflict:
+      description: Conflicts with existing state
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    PreconditionFailed:
+      description: If-Match did not match; the resource changed underneath you
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    ValidationFailed:
+      description: Field-level validation errors
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    TooManyRequests:
+      description: Rate limited
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+    InsufficientStock:
+      description: The operation would drive stock negative
+      content:
+        application/problem+json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Problem'
+              - type: object
+                properties:
+                  productId: { type: string, format: uuid }
+                  requested: { type: number }
+                  available: { type: number }
 
-schemas:
+  schemas:
 
-Problem:
-type: object
-description: RFC 9457 problem detail
-properties:
-type: { type: string, format: uri, examples: ['https://api.example.com/problems/insufficient-stock'] }
-title: { type: string }
-status: { type: integer }
-detail: { type: string }
-instance: { type: string }
-traceId: { type: string }
-errors:
-type: array
-items:
-type: object
-properties:
-field: { type: string }
-message: { type: string }
+    Problem:
+      type: object
+      description: RFC 9457 problem detail
+      properties:
+        type: { type: string, format: uri, examples: ['https://api.example.com/problems/insufficient-stock'] }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        instance: { type: string }
+        traceId: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              message: { type: string }
 
-Page:
-type: object
-properties:
-items:
-type: array
-items: { type: object }
-nextCursor:
-type: string
-nullable: true
-description: Null when the last page has been reached
+    Page:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { type: object }
+        nextCursor:
+          type: string
+          nullable: true
+          description: Null when the last page has been reached
 
-UserRole:
-type: string
-enum: [owner, manager, clerk, viewer]
-description: |
-owner   – billing, users, everything
-manager – catalog, purchasing, reports, adjustments
-clerk   – record sales, receive stock, count
-viewer  – read only
+    UserRole:
+      type: string
+      enum: [owner, manager, clerk, viewer]
+      description: |
+        owner   – billing, users, everything
+        manager – catalog, purchasing, reports, adjustments
+        clerk   – record sales, receive stock, count
+        viewer  – read only
 
-MovementType:
-type: string
-enum: [purchase_receipt, sale, sale_return, purchase_return, adjustment,
-stocktake, transfer_in, transfer_out, opening_balance]
+    MovementType:
+      type: string
+      enum: [purchase_receipt, sale, sale_return, purchase_return, adjustment,
+             stocktake, transfer_in, transfer_out, opening_balance]
 
-AuthTokens:
-type: object
-properties:
-accessToken: { type: string }
-refreshToken: { type: string }
-expiresIn: { type: integer, description: Access token TTL in seconds }
-tokenType: { type: string, examples: [Bearer] }
-user: { $ref: '#/components/schemas/CurrentUser' }
+    AuthTokens:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: Access token TTL in seconds }
+        tokenType: { type: string, examples: [Bearer] }
+        user: { $ref: '#/components/schemas/CurrentUser' }
 
-LoginRequest:
-type: object
-required: [email, password]
-properties:
-email: { type: string, format: email }
-password: { type: string, format: password, minLength: 8 }
-tenantSlug: { type: string }
-deviceLabel: { type: string }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password, minLength: 8 }
+        tenantSlug: { type: string }
+        deviceLabel: { type: string }
 
-TenantRegistrationRequest:
-type: object
-required: [businessName, slug, ownerEmail, ownerPassword, ownerName]
-properties:
-businessName: { type: string }
-slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,62}$' }
-ownerEmail: { type: string, format: email }
-ownerPassword: { type: string, format: password, minLength: 8 }
-ownerName: { type: string }
-currencyCode: { type: string, minLength: 3, maxLength: 3, default: ZAR }
-timezone: { type: string, default: UTC }
+    TenantRegistrationRequest:
+      type: object
+      required: [businessName, slug, ownerEmail, ownerPassword, ownerName]
+      properties:
+        businessName: { type: string }
+        slug: { type: string, pattern: '^[a-z0-9][a-z0-9-]{1,62}$' }
+        ownerEmail: { type: string, format: email }
+        ownerPassword: { type: string, format: password, minLength: 8 }
+        ownerName: { type: string }
+        currencyCode: { type: string, minLength: 3, maxLength: 3, default: ZAR }
+        timezone: { type: string, default: UTC }
 
-TenantSummary:
-type: object
-properties:
-id: { type: string, format: uuid }
-slug: { type: string }
-name: { type: string }
+    TenantSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        name: { type: string }
 
-CurrentUser:
-type: object
-properties:
-id: { type: string, format: uuid }
-email: { type: string, format: email }
-fullName: { type: string }
-role: { $ref: '#/components/schemas/UserRole' }
-tenant: { $ref: '#/components/schemas/TenantSummary' }
-currencyCode: { type: string }
-timezone: { type: string }
-defaultLocationId: { type: string, format: uuid }
+    CurrentUser:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        fullName: { type: string }
+        role: { $ref: '#/components/schemas/UserRole' }
+        tenant: { $ref: '#/components/schemas/TenantSummary' }
+        currencyCode: { type: string }
+        timezone: { type: string }
+        defaultLocationId: { type: string, format: uuid }
 
-User:
-type: object
-properties:
-id: { type: string, format: uuid }
-email: { type: string, format: email }
-fullName: { type: string }
-role: { $ref: '#/components/schemas/UserRole' }
-status: { type: string, enum: [invited, active, disabled] }
-lastLoginAt: { type: string, format: date-time, nullable: true }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        fullName: { type: string }
+        role: { $ref: '#/components/schemas/UserRole' }
+        status: { type: string, enum: [invited, active, disabled] }
+        lastLoginAt: { type: string, format: date-time, nullable: true }
 
-UserInviteRequest:
-type: object
-required: [email, fullName, role]
-properties:
-email: { type: string, format: email }
-fullName: { type: string }
-role: { $ref: '#/components/schemas/UserRole' }
+    UserInviteRequest:
+      type: object
+      required: [email, fullName, role]
+      properties:
+        email: { type: string, format: email }
+        fullName: { type: string }
+        role: { $ref: '#/components/schemas/UserRole' }
 
-Category:
-type: object
-properties:
-id: { type: string, format: uuid }
-name: { type: string }
-parentId: { type: string, format: uuid, nullable: true }
-productCount: { type: integer }
+    Category:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        parentId: { type: string, format: uuid, nullable: true }
+        productCount: { type: integer }
 
-Location:
-type: object
-properties:
-id: { type: string, format: uuid }
-name: { type: string }
-address: { type: string, nullable: true }
-isDefault: { type: boolean }
-isActive: { type: boolean }
+    Location:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        address: { type: string, nullable: true }
+        isDefault: { type: boolean }
+        isActive: { type: boolean }
 
-Product:
-type: object
-properties:
-id: { type: string, format: uuid }
-sku: { type: string }
-barcode: { type: string, nullable: true }
-name: { type: string }
-categoryId: { type: string, format: uuid, nullable: true }
-unitOfMeasure: { type: string }
-costPrice: { type: number }
-sellingPrice: { type: number }
-taxRate: { type: number }
-quantityOnHand: { type: number }
-quantityAvailable: { type: number }
-stockState: { type: string, enum: [ok, reorder, out_of_stock, unknown] }
-isActive: { type: boolean }
-updatedAt: { type: string, format: date-time }
+    Product:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        sku: { type: string }
+        barcode: { type: string, nullable: true }
+        name: { type: string }
+        categoryId: { type: string, format: uuid, nullable: true }
+        unitOfMeasure: { type: string }
+        costPrice: { type: number }
+        sellingPrice: { type: number }
+        taxRate: { type: number }
+        quantityOnHand: { type: number }
+        quantityAvailable: { type: number }
+        stockState: { type: string, enum: [ok, reorder, out_of_stock, unknown] }
+        isActive: { type: boolean }
+        updatedAt: { type: string, format: date-time }
 
-ProductDetail:
-allOf:
-- $ref: '#/components/schemas/Product'
-- type: object
-properties:
-description: { type: string, nullable: true }
-reorderPoint: { type: number, nullable: true }
-reorderQuantity: { type: number, nullable: true }
-safetyStock: { type: number, nullable: true }
-allowNegativeStock: { type: boolean }
-stockByLocation:
-type: array
-items: { $ref: '#/components/schemas/StockStatus' }
-forecast:
-    oneOf:
-    - $ref: '#/components/schemas/Forecast'
-    - type: 'null'
-    preferredSupplier:
-    oneOf:
-    - $ref: '#/components/schemas/Supplier'
-    - type: 'null'
-    
+    ProductDetail:
+      allOf:
+        - $ref: '#/components/schemas/Product'
+        - type: object
+          properties:
+            description: { type: string, nullable: true }
+            reorderPoint: { type: number, nullable: true }
+            reorderQuantity: { type: number, nullable: true }
+            safetyStock: { type: number, nullable: true }
+            allowNegativeStock: { type: boolean }
+            stockByLocation:
+              type: array
+              items: { $ref: '#/components/schemas/StockStatus' }
+            forecast:
+              oneOf:
+                - $ref: '#/components/schemas/Forecast'
+                - type: 'null'
+            preferredSupplier:
+              oneOf:
+                - $ref: '#/components/schemas/Supplier'
+                - type: 'null'
+
     ProductWriteRequest:
-    type: object
-    required: [sku, name]
-    properties:
-    sku: { type: string, minLength: 1, maxLength: 64 }
-    barcode: { type: string, nullable: true }
-    name: { type: string, minLength: 1 }
-    description: { type: string }
-    categoryId: { type: string, format: uuid, nullable: true }
-    unitOfMeasure: { type: string, default: each }
-    costPrice: { type: number, minimum: 0 }
-    sellingPrice: { type: number, minimum: 0 }
-    taxRate: { type: number, minimum: 0, exclusiveMaximum: 1 }
-    reorderPoint: { type: number, minimum: 0, nullable: true }
-    reorderQuantity: { type: number, exclusiveMinimum: 0, nullable: true }
-    safetyStock: { type: number, minimum: 0, nullable: true }
-    isTracked: { type: boolean, default: true }
-    allowNegativeStock: { type: boolean, default: false }
-    openingStock:
-    type: object
-    description: Create-only; posts an opening_balance movement
-    properties:
-    locationId: { type: string, format: uuid }
-    quantity: { type: number, minimum: 0 }
-    unitCost: { type: number, minimum: 0 }
-    
+      type: object
+      required: [sku, name]
+      properties:
+        sku: { type: string, minLength: 1, maxLength: 64 }
+        barcode: { type: string, nullable: true }
+        name: { type: string, minLength: 1 }
+        description: { type: string }
+        categoryId: { type: string, format: uuid, nullable: true }
+        unitOfMeasure: { type: string, default: each }
+        costPrice: { type: number, minimum: 0 }
+        sellingPrice: { type: number, minimum: 0 }
+        taxRate: { type: number, minimum: 0, exclusiveMaximum: 1 }
+        reorderPoint: { type: number, minimum: 0, nullable: true }
+        reorderQuantity: { type: number, exclusiveMinimum: 0, nullable: true }
+        safetyStock: { type: number, minimum: 0, nullable: true }
+        isTracked: { type: boolean, default: true }
+        allowNegativeStock: { type: boolean, default: false }
+        openingStock:
+          type: object
+          description: Create-only; posts an opening_balance movement
+          properties:
+            locationId: { type: string, format: uuid }
+            quantity: { type: number, minimum: 0 }
+            unitCost: { type: number, minimum: 0 }
+
     Supplier:
-    type: object
-    properties:
-    id: { type: string, format: uuid }
-    name: { type: string }
-    contactName: { type: string, nullable: true }
-    email: { type: string, nullable: true }
-    phone: { type: string, nullable: true }
-    leadTimeDays: { type: integer }
-    minOrderValue: { type: number, nullable: true }
-    isActive: { type: boolean }
-    
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        contactName: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        leadTimeDays: { type: integer }
+        minOrderValue: { type: number, nullable: true }
+        isActive: { type: boolean }
+
     SupplierDetail:
-    allOf:
-    - $ref: '#/components/schemas/Supplier'
-    - type: object
-    properties:
-    address: { type: string, nullable: true }
-    notes: { type: string, nullable: true }
-    observedLeadTime:
-    type: object
-    description: Measured from actual receipts, not the promised figure
-    properties:
-    averageDays: { type: number, nullable: true }
-    stddevDays: { type: number, nullable: true }
-    sampleSize: { type: integer }
-    onTimeRate: { type: number, nullable: true }
-    productCount: { type: integer }
-    
+      allOf:
+        - $ref: '#/components/schemas/Supplier'
+        - type: object
+          properties:
+            address: { type: string, nullable: true }
+            notes: { type: string, nullable: true }
+            observedLeadTime:
+              type: object
+              description: Measured from actual receipts, not the promised figure
+              properties:
+                averageDays: { type: number, nullable: true }
+                stddevDays: { type: number, nullable: true }
+                sampleSize: { type: integer }
+                onTimeRate: { type: number, nullable: true }
+            productCount: { type: integer }
+
     SupplierWriteRequest:
-    type: object
-    required: [name]
-    properties:
-    name: { type: string, minLength: 1 }
-    contactName: { type: string }
-    email: { type: string, format: email }
-    phone: { type: string }
-    address: { type: string }
-    leadTimeDays: { type: integer, minimum: 0, maximum: 365, default: 7 }
-    minOrderValue: { type: number, minimum: 0 }
-    notes: { type: string }
-    
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        contactName: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        address: { type: string }
+        leadTimeDays: { type: integer, minimum: 0, maximum: 365, default: 7 }
+        minOrderValue: { type: number, minimum: 0 }
+        notes: { type: string }
+
     ProductSupplier:
-    type: object
-    properties:
-    supplierId: { type: string, format: uuid }
-    supplierName: { type: string }
-    supplierSku: { type: string, nullable: true }
-    unitCost: { type: number, nullable: true }
-    packSize: { type: number }
-    leadTimeDays: { type: integer, nullable: true }
-    isPreferred: { type: boolean }
-    
+      type: object
+      properties:
+        supplierId: { type: string, format: uuid }
+        supplierName: { type: string }
+        supplierSku: { type: string, nullable: true }
+        unitCost: { type: number, nullable: true }
+        packSize: { type: number }
+        leadTimeDays: { type: integer, nullable: true }
+        isPreferred: { type: boolean }
+
     ProductSupplierWrite:
-    type: object
-    required: [supplierId]
-    properties:
-    supplierId: { type: string, format: uuid }
-    supplierSku: { type: string }
-    unitCost: { type: number, minimum: 0 }
-    packSize: { type: number, exclusiveMinimum: 0, default: 1 }
-    leadTimeDays: { type: integer, minimum: 0 }
-    isPreferred: { type: boolean, default: false }
-    
+      type: object
+      required: [supplierId]
+      properties:
+        supplierId: { type: string, format: uuid }
+        supplierSku: { type: string }
+        unitCost: { type: number, minimum: 0 }
+        packSize: { type: number, exclusiveMinimum: 0, default: 1 }
+        leadTimeDays: { type: integer, minimum: 0 }
+        isPreferred: { type: boolean, default: false }
+
     StockStatus:
-    type: object
-    properties:
-    productId: { type: string, format: uuid }
-    sku: { type: string }
-    name: { type: string }
-    locationId: { type: string, format: uuid }
-    locationName: { type: string }
-    quantityOnHand: { type: number }
-    quantityReserved: { type: number }
-    quantityAvailable: { type: number }
-    reorderPoint: { type: number, nullable: true }
-    stockState: { type: string, enum: [ok, reorder, out_of_stock, unknown] }
-    daysOfCover: { type: number, nullable: true }
-    updatedAt: { type: string, format: date-time }
-    
+      type: object
+      properties:
+        productId: { type: string, format: uuid }
+        sku: { type: string }
+        name: { type: string }
+        locationId: { type: string, format: uuid }
+        locationName: { type: string }
+        quantityOnHand: { type: number }
+        quantityReserved: { type: number }
+        quantityAvailable: { type: number }
+        reorderPoint: { type: number, nullable: true }
+        stockState: { type: string, enum: [ok, reorder, out_of_stock, unknown] }
+        daysOfCover: { type: number, nullable: true }
+        updatedAt: { type: string, format: date-time }
+
     StockMovement:
-    type: object
-    properties:
-    id: { type: integer, format: int64 }
-    productId: { type: string, format: uuid }
-    productName: { type: string }
-    locationId: { type: string, format: uuid }
-    movementType: { $ref: '#/components/schemas/MovementType' }
-    quantityDelta: { type: number, description: Signed; negative is stock out }
-    balanceAfter: { type: number, nullable: true }
-    unitCost: { type: number, nullable: true }
-    referenceType: { type: string, nullable: true }
-    referenceId: { type: string, format: uuid, nullable: true }
-    reason: { type: string, nullable: true }
-    occurredAt: { type: string, format: date-time }
-    createdBy: { type: string, format: uuid, nullable: true }
-    createdByName: { type: string, nullable: true }
-    
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        productId: { type: string, format: uuid }
+        productName: { type: string }
+        locationId: { type: string, format: uuid }
+        movementType: { $ref: '#/components/schemas/MovementType' }
+        quantityDelta: { type: number, description: Signed; negative is stock out }
+        balanceAfter: { type: number, nullable: true }
+        unitCost: { type: number, nullable: true }
+        referenceType: { type: string, nullable: true }
+        referenceId: { type: string, format: uuid, nullable: true }
+        reason: { type: string, nullable: true }
+        occurredAt: { type: string, format: date-time }
+        createdBy: { type: string, format: uuid, nullable: true }
+        createdByName: { type: string, nullable: true }
+
     AdjustmentRequest:
-    type: object
-    required: [productId, quantityDelta, reason]
-    properties:
-    productId: { type: string, format: uuid }
-    locationId: { type: string, format: uuid }
-    quantityDelta:
-    type: number
-    description: Signed and non-zero. Use -2 for two damaged units.
-    reason: { type: string, minLength: 1 }
-    unitCost: { type: number, minimum: 0 }
-    occurredAt: { type: string, format: date-time }
-    
+      type: object
+      required: [productId, quantityDelta, reason]
+      properties:
+        productId: { type: string, format: uuid }
+        locationId: { type: string, format: uuid }
+        quantityDelta:
+          type: number
+          description: Signed and non-zero. Use -2 for two damaged units.
+        reason: { type: string, minLength: 1 }
+        unitCost: { type: number, minimum: 0 }
+        occurredAt: { type: string, format: date-time }
+
     Stocktake:
-    type: object
-    properties:
-    id: { type: string, format: uuid }
-    locationId: { type: string, format: uuid }
-    reference: { type: string, nullable: true }
-    startedAt: { type: string, format: date-time }
-    completedAt: { type: string, format: date-time, nullable: true }
-    lineCount: { type: integer }
-    totalVariance: { type: number }
-    
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        locationId: { type: string, format: uuid }
+        reference: { type: string, nullable: true }
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }
+        lineCount: { type: integer }
+        totalVariance: { type: number }
+
     StocktakeLine:
-    type: object
-    properties:
-    productId: { type: string, format: uuid }
-    sku: { type: string }
-    name: { type: string }
-    expectedQty: { type: number }
-    countedQty: { type: number }
-    variance: { type: number }
-    note: { type: string, nullable: true }
-    
+      type: object
+      properties:
+        productId: { type: string, format: uuid }
+        sku: { type: string }
+        name: { type: string }
+        expectedQty: { type: number }
+        countedQty: { type: number }
+        variance: { type: number }
+        note: { type: string, nullable: true }
+
     Sale:
-    type: object
-    properties:
-    id: { type: string, format: uuid }
-    saleNumber: { type: string }
-    status: { type: string, enum: [draft, completed, voided, refunded] }
-    customerName: { type: string, nullable: true }
-    itemCount: { type: integer }
-    subtotalAmount: { type: number }
-    discountAmount: { type: number }
-    taxAmount: { type: number }
-    totalAmount: { type: number }
-    paymentMethod: { type: string, nullable: true }
-    soldAt: { type: string, format: date-time }
-    
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        saleNumber: { type: string }
+        status: { type: string, enum: [draft, completed, voided, refunded] }
+        customerName: { type: string, nullable: true }
+        itemCount: { type: integer }
+        subtotalAmount: { type: number }
+        discountAmount: { type: number }
+        taxAmount: { type: number }
+        totalAmount: { type: number }
+        paymentMethod: { type: string, nullable: true }
+        soldAt: { type: string, format: date-time }
+
     SaleDetail:
-    allOf:
-    - $ref: '#/components/schemas/Sale'
-    - type: object
-    properties:
-    locationId: { type: string, format: uuid }
-    createdBy: { type: string, format: uuid }
-    createdByName: { type: string }
-    lines:
-    type: array
-    items:
-    type: object
-    properties:
-    productId: { type: string, format: uuid }
-    sku: { type: string }
-    name: { type: string }
-    quantity: { type: number }
-    unitPrice: { type: number }
-    discountAmount: { type: number }
-    taxRate: { type: number }
-    lineTotal: { type: number }
-    
+      allOf:
+        - $ref: '#/components/schemas/Sale'
+        - type: object
+          properties:
+            locationId: { type: string, format: uuid }
+            createdBy: { type: string, format: uuid }
+            createdByName: { type: string }
+            lines:
+              type: array
+              items:
+                type: object
+                properties:
+                  productId: { type: string, format: uuid }
+                  sku: { type: string }
+                  name: { type: string }
+                  quantity: { type: number }
+                  unitPrice: { type: number }
+                  discountAmount: { type: number }
+                  taxRate: { type: number }
+                  lineTotal: { type: number }
+
     SaleWriteRequest:
-    type: object
-    required: [lines]
-    properties:
-    clientRequestId:
-    type: string
-    format: uuid
-        description: Generate on the device before the first attempt, reuse on retry
+      type: object
+      required: [lines]
+      properties:
+        clientRequestId:
+          type: string
+          format: uuid
+          description: Generate on the device before the first attempt, reuse on retry
         locationId: { type: string, format: uuid }
         customerName: { type: string }
         customerPhone: { type: string }
         paymentMethod: { type: string, examples: [cash, card, eft, mobile_money] }
         discountAmount: { type: number, minimum: 0, default: 0 }
         soldAt:
-        type: string
-        format: date-time
-            description: Set by the client for sales captured offline; defaults to now
-            lines:
-            type: array
-            minItems: 1
-            items:
+          type: string
+          format: date-time
+          description: Set by the client for sales captured offline; defaults to now
+        lines:
+          type: array
+          minItems: 1
+          items:
             type: object
             required: [productId, quantity]
             properties:
-            productId: { type: string, format: uuid }
-            quantity: { type: number, exclusiveMinimum: 0 }
-            unitPrice:
-            type: number
-            minimum: 0
-            description: Omit to use the product's current selling price
-            discountAmount: { type: number, minimum: 0, default: 0 }
-            
-            PurchaseOrder:
-            type: object
-            properties:
-            id: { type: string, format: uuid }
-            poNumber: { type: string }
-            supplierId: { type: string, format: uuid }
-            supplierName: { type: string }
-            status: { type: string, enum: [draft, ordered, partial, received, cancelled] }
-            orderedAt: { type: string, format: date-time, nullable: true }
-            expectedAt: { type: string, format: date, nullable: true }
-            receivedAt: { type: string, format: date-time, nullable: true }
-            totalAmount: { type: number }
-            lineCount: { type: integer }
-            
-            PurchaseOrderDetail:
-            allOf:
-            - $ref: '#/components/schemas/PurchaseOrder'
-            - type: object
-            properties:
+              productId: { type: string, format: uuid }
+              quantity: { type: number, exclusiveMinimum: 0 }
+              unitPrice:
+                type: number
+                minimum: 0
+                description: Omit to use the product's current selling price
+              discountAmount: { type: number, minimum: 0, default: 0 }
+
+    PurchaseOrder:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        poNumber: { type: string }
+        supplierId: { type: string, format: uuid }
+        supplierName: { type: string }
+        status: { type: string, enum: [draft, ordered, partial, received, cancelled] }
+        orderedAt: { type: string, format: date-time, nullable: true }
+        expectedAt: { type: string, format: date, nullable: true }
+        receivedAt: { type: string, format: date-time, nullable: true }
+        totalAmount: { type: number }
+        lineCount: { type: integer }
+
+    PurchaseOrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/PurchaseOrder'
+        - type: object
+          properties:
             locationId: { type: string, format: uuid }
             notes: { type: string, nullable: true }
             lines:
-            type: array
-            items:
-            type: object
-            properties:
-            productId: { type: string, format: uuid }
-            sku: { type: string }
-            name: { type: string }
-            quantityOrdered: { type: number }
-            quantityReceived: { type: number }
-            quantityOutstanding: { type: number }
-            unitCost: { type: number }
-            lineTotal: { type: number }
-            
-            PurchaseOrderWriteRequest:
-            type: object
-            required: [supplierId, lines]
-            properties:
-            supplierId: { type: string, format: uuid }
-            locationId: { type: string, format: uuid }
-            expectedAt: { type: string, format: date }
-            notes: { type: string }
-            fromRecommendationIds:
-            type: array
-            items: { type: string, format: uuid }
-            description: Marks those recommendations as 'ordered'
-            lines:
-            type: array
-            minItems: 1
-            items:
+              type: array
+              items:
+                type: object
+                properties:
+                  productId: { type: string, format: uuid }
+                  sku: { type: string }
+                  name: { type: string }
+                  quantityOrdered: { type: number }
+                  quantityReceived: { type: number }
+                  quantityOutstanding: { type: number }
+                  unitCost: { type: number }
+                  lineTotal: { type: number }
+
+    PurchaseOrderWriteRequest:
+      type: object
+      required: [supplierId, lines]
+      properties:
+        supplierId: { type: string, format: uuid }
+        locationId: { type: string, format: uuid }
+        expectedAt: { type: string, format: date }
+        notes: { type: string }
+        fromRecommendationIds:
+          type: array
+          items: { type: string, format: uuid }
+          description: Marks those recommendations as 'ordered'
+        lines:
+          type: array
+          minItems: 1
+          items:
             type: object
             required: [productId, quantityOrdered]
             properties:
-            productId: { type: string, format: uuid }
-            quantityOrdered: { type: number, exclusiveMinimum: 0 }
-            unitCost: { type: number, minimum: 0 }
-            
-            Forecast:
+              productId: { type: string, format: uuid }
+              quantityOrdered: { type: number, exclusiveMinimum: 0 }
+              unitCost: { type: number, minimum: 0 }
+
+    Forecast:
+      type: object
+      properties:
+        productId: { type: string, format: uuid }
+        locationId: { type: string, format: uuid }
+        method:
+          type: string
+          enum: [moving_average, weighted_moving_average, exponential_smoothing,
+                 croston, ml_model, insufficient_data]
+        generatedAt: { type: string, format: date-time }
+        historyDays: { type: integer }
+        avgDailyDemand: { type: number }
+        demandStddev: { type: number }
+        horizonDays: { type: integer }
+        forecastQty: { type: number }
+        daysOfCover: { type: number, nullable: true }
+        projectedStockoutOn: { type: string, format: date, nullable: true }
+        reorderPoint: { type: number, nullable: true }
+        serviceLevel: { type: number }
+        confidence:
+          type: number
+          nullable: true
+          description: 0–1. Low values mean thin or erratic history; show it in the UI.
+
+    ForecastDetail:
+      allOf:
+        - $ref: '#/components/schemas/Forecast'
+        - type: object
+          properties:
+            explanation:
+              type: string
+              description: Plain-English rationale for the shop owner
+              examples: ['You sell about 7.5 phones a week. 17 in stock covers roughly 16 days.']
+            history:
+              type: array
+              description: Daily demand series; zero-demand days included on purpose
+              items:
+                type: object
+                properties:
+                  day: { type: string, format: date }
+                  unitsSold: { type: number }
+                  hadStockout: { type: boolean }
+
+    ReorderRecommendation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        productId: { type: string, format: uuid }
+        sku: { type: string }
+        name: { type: string }
+        locationId: { type: string, format: uuid }
+        supplierId: { type: string, format: uuid, nullable: true }
+        supplierName: { type: string, nullable: true }
+        quantityOnHand: { type: number }
+        reorderPoint: { type: number }
+        recommendedQty: { type: number }
+        estimatedCost: { type: number, nullable: true }
+        projectedStockoutOn: { type: string, format: date, nullable: true }
+        urgency: { type: string, enum: [critical, high, normal] }
+        rationale: { type: string }
+        status: { type: string, enum: [open, ordered, dismissed, expired] }
+        createdAt: { type: string, format: date-time }
+
+    DashboardSummary:
+      type: object
+      properties:
+        period: { type: string }
+        salesTotal: { type: number }
+        salesCount: { type: integer }
+        grossProfit: { type: number }
+        inventoryValue: { type: number }
+        lowStockCount: { type: integer }
+        outOfStockCount: { type: integer }
+        openRecommendationCount: { type: integer }
+        salesTrend:
+          type: array
+          items:
             type: object
             properties:
-            productId: { type: string, format: uuid }
-            locationId: { type: string, format: uuid }
-            method:
-            type: string
-            enum: [moving_average, weighted_moving_average, exponential_smoothing,
-croston, ml_model, insufficient_data]
-generatedAt: { type: string, format: date-time }
-historyDays: { type: integer }
-avgDailyDemand: { type: number }
-demandStddev: { type: number }
-horizonDays: { type: integer }
-forecastQty: { type: number }
-daysOfCover: { type: number, nullable: true }
-projectedStockoutOn: { type: string, format: date, nullable: true }
-reorderPoint: { type: number, nullable: true }
-serviceLevel: { type: number }
-confidence:
-type: number
-nullable: true
-description: 0–1. Low values mean thin or erratic history; show it in the UI.
-
-ForecastDetail:
-allOf:
-- $ref: '#/components/schemas/Forecast'
-- type: object
-properties:
-explanation:
-type: string
-description: Plain-English rationale for the shop owner
-examples: ['You sell about 7.5 phones a week. 17 in stock covers roughly 16 days.']
-history:
-type: array
-description: Daily demand series; zero-demand days included on purpose
-items:
-type: object
-properties:
-day: { type: string, format: date }
-unitsSold: { type: number }
-hadStockout: { type: boolean }
-
-ReorderRecommendation:
-type: object
-properties:
-id: { type: string, format: uuid }
-productId: { type: string, format: uuid }
-sku: { type: string }
-name: { type: string }
-locationId: { type: string, format: uuid }
-supplierId: { type: string, format: uuid, nullable: true }
-supplierName: { type: string, nullable: true }
-quantityOnHand: { type: number }
-reorderPoint: { type: number }
-recommendedQty: { type: number }
-estimatedCost: { type: number, nullable: true }
-projectedStockoutOn: { type: string, format: date, nullable: true }
-urgency: { type: string, enum: [critical, high, normal] }
-rationale: { type: string }
-status: { type: string, enum: [open, ordered, dismissed, expired] }
-createdAt: { type: string, format: date-time }
-
-DashboardSummary:
-type: object
-properties:
-period: { type: string }
-salesTotal: { type: number }
-salesCount: { type: integer }
-grossProfit: { type: number }
-inventoryValue: { type: number }
-lowStockCount: { type: integer }
-outOfStockCount: { type: integer }
-openRecommendationCount: { type: integer }
-salesTrend:
-type: array
-items:
-type: object
-properties:
-day: { type: string, format: date }
-revenue: { type: number }
-topProducts:
-type: array
-items:
-type: object
-properties:
-productId: { type: string, format: uuid }
-name: { type: string }
-unitsSold: { type: number }
+              day: { type: string, format: date }
+              revenue: { type: number }
+        topProducts:
+          type: array
+          items:
+            type: object
+            properties:
+              productId: { type: string, format: uuid }
+              name: { type: string }
+              unitsSold: { type: number }
