@@ -51,6 +51,30 @@ paths:
 # ------------------------------------------------------------------
 # Authentication
 # ------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# DECISIONS ON RECORD for /auth/register-tenant (M1)
+#
+# 409 on a taken slug DELIBERATELY DISCLOSES that a tenant with that slug
+# exists. This is accepted, not accidental:
+#   * it is the same disclosure any username-availability check makes, and
+#     the slug is a public identifier by design;
+#   * registration cannot pre-check availability anyway — it runs bound to a
+#     brand-new tenant id, so RLS hides the conflicting row. The UNIQUE index
+#     on tenants.slug is enforced physically, independent of RLS, which is
+#     why the collision surfaces at all;
+#   * the alternative is a silent failure that leaves the user unable to
+#     register and unable to find out why.
+# A primary-key collision returns the SAME 409 with the same body, so a
+# caller cannot distinguish the two or use it to confirm a guessed tenant id.
+#
+# The tenant id is generated server-side and is NEVER read from the request.
+# There is no field for one in TenantRegistrationRequest; a client that sends
+# tenantId/tenant_id/id anyway is ignored. See CLAUDE.md section 12.
+#
+# RATE LIMITED from M1, not M9: this endpoint is unauthenticated and creates
+# rows. Exceeding the limit returns 429 with Retry-After. Limits are per
+# instance, not per cluster.
+# ---------------------------------------------------------------------
 /auth/register-tenant:
 post:
 tags: [Authentication]
@@ -69,6 +93,7 @@ application/json:
 schema: { $ref: '#/components/schemas/AuthTokens' }
 '409': { $ref: '#/components/responses/Conflict' }
 '422': { $ref: '#/components/responses/ValidationFailed' }
+'429': { $ref: '#/components/responses/TooManyRequests' }
 
 /auth/login:
 post:

@@ -52,6 +52,21 @@ app:
       hikari:
         pool-name: inventory-login-pool
         maximum-pool-size: ${DB_LOGIN_POOL_MAX:5}
+
+  auth:
+    # No default, by design. Anyone holding this key can mint a token for any
+    # tenant, so a shipped fallback would be a shared master key. At least 32
+    # bytes or the application refuses to start.
+    signing-key: ${JWT_SIGNING_KEY}
+    issuer: ${JWT_ISSUER:inventory-backend}
+    ttl:
+      access: ${JWT_ACCESS_TTL:15m}
+      refresh: ${JWT_REFRESH_TTL:30d}
+    rate-limit:
+      # Per instance, not per cluster — see AuthRateLimiter. Behind more than one
+      # replica the effective limit multiplies by the replica count.
+      registrations-per-hour: ${AUTH_REGISTRATIONS_PER_HOUR:5}
+      login-attempts-per-minute: ${AUTH_LOGIN_ATTEMPTS_PER_MINUTE:10}
         # This pool never binds app.tenant_id, so it has no per-connection
         # tenant state to leak. The lifetime cap is here for parity with the
         # app pool rather than to bound a leak.

@@ -112,15 +112,34 @@ public class DataSourceConfig {
         return new DataSourceProperties();
     }
 
+    /**
+     * The raw pool. Not {@code @Primary} and not what anything should inject —
+     * connections taken from here carry no tenant binding at all.
+     */
     @Bean
-    @Primary
     @ConfigurationProperties("spring.datasource.hikari")
-    HikariDataSource appDataSource(
+    HikariDataSource appConnectionPool(
             @Qualifier("appDataSourceProperties") DataSourceProperties appDataSourceProperties) {
         return appDataSourceProperties
                 .initializeDataSourceBuilder()
                 .type(HikariDataSource.class)
                 .build();
+    }
+
+    /**
+     * The application datasource everything else uses: the pool above, wrapped so
+     * that {@code app.tenant_id} is set on checkout and cleared on release
+     * (CLAUDE.md T3).
+     *
+     * <p>{@code @Primary} points here rather than at the raw pool deliberately.
+     * JPA, {@code JdbcTemplate} and every repository resolve to this bean by
+     * default, so the tenant binding is the path of least resistance and reaching
+     * an unbound connection takes a conscious {@code @Qualifier("appConnectionPool")}.
+     */
+    @Bean
+    @Primary
+    DataSource appDataSource(@Qualifier("appConnectionPool") HikariDataSource appConnectionPool) {
+        return new TenantConnectionProvider(appConnectionPool);
     }
 
     // ------------------------------------------------------------------

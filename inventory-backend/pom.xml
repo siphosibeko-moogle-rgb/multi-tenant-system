@@ -109,9 +109,33 @@
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
 
-    <!-- spring-boot-starter-security is deliberately NOT here. Added in M1
-         together with the configuration it needs; an unconfigured security
-         starter would lock /actuator/health behind a generated password. -->
+    <!-- M1: added together with SecurityConfig, as the M0 note here promised.
+         An unconfigured security starter would lock /actuator/health behind a
+         generated password, so this and that configuration land in one change. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+
+    <!-- JWT issue and verify. Chosen over jjwt because it is the Spring-native
+         path: this brings spring-security-oauth2-jose (NimbusJwtEncoder /
+         NimbusJwtDecoder) plus nimbus-jose-jwt, and integrates with the resource
+         server filter chain rather than sitting beside it.
+
+         "Resource server" is the right module even though this application also
+         ISSUES the tokens it verifies. There is no separate authorisation
+         server, and adding spring-authorization-server for a single HMAC key
+         would be a great deal of machinery for no benefit. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
 
     <!-- ==================== Database ======================================= -->
     <dependency>

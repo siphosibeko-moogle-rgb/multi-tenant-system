@@ -60,6 +60,19 @@ app:
         # this pool exists for a single query per authentication attempt.
         maximum-pool-size: ${DB_LOGIN_POOL_MAX:4}
 
+  auth:
+    # Local-only default, and long enough to satisfy the HS256 minimum. Prod has
+    # no default at all — see application-prod.yml. Forging this key means
+    # forging the tid claim, which is the whole of tenant isolation.
+    signing-key: ${JWT_SIGNING_KEY:local-development-signing-key-not-a-secret-32b+}
+    issuer: inventory-backend
+    ttl:
+      access: 15m
+      refresh: 30d
+    rate-limit:
+      registrations-per-hour: ${AUTH_REGISTRATIONS_PER_HOUR:5}
+      login-attempts-per-minute: ${AUTH_LOGIN_ATTEMPTS_PER_MINUTE:10}
+
 management:
   endpoint:
     health:

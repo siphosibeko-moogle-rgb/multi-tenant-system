@@ -21,6 +21,26 @@ spring:
     # checksums of already-applied migrations still have to line up.
     validate-on-migrate: true
 
+# Top level, NOT under spring: — these bind to app.auth.*, and nesting them one
+# level in makes them spring.auth.*, which nothing reads. The symptom is a
+# startup failure complaining that app.auth.signing-key is unset while the value
+# is plainly there in the file.
+app:
+  auth:
+    # Fixed across the suite so a token minted in one test verifies in another.
+    # Long enough for HS256's 32-byte minimum.
+    signing-key: test-only-signing-key-not-used-anywhere-else-0123456789
+    issuer: inventory-backend-test
+    ttl:
+      access: 15m
+      refresh: 30d
+    rate-limit:
+      # Effectively off. The suite makes many auth calls from one address, and a
+      # production-shaped limit would make unrelated tests fail by ordering.
+      # AuthRateLimiterTest sets its own low limits to test the limiter itself.
+      registrations-per-hour: 100000
+      login-attempts-per-minute: 100000
+
 management:
   endpoint:
     health:
