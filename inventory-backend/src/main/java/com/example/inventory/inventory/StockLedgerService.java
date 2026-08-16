@@ -14,6 +14,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import com.example.inventory.tenancy.TenantContext;
 import com.example.inventory.web.SqlStates;
+import com.example.inventory.web.ConflictException;
 import com.example.inventory.web.NotFoundException;
 
 /**
@@ -94,6 +95,26 @@ public class StockLedgerService {
             OffsetDateTime occurredAt) {
     }
 
+    /**
+     * @param quantity   positive; the direction is supplied by the two movement
+     *                   types, not by the caller's sign
+     * @param transferId ties the pair together as {@code reference_id}, so the
+     *                   two halves can be found as one event later
+     */
+    public record TransferRequest(
+            UUID productId,
+            UUID fromLocationId,
+            UUID toLocationId,
+            BigDecimal quantity,
+            String reason,
+            UUID transferId,
+            OffsetDateTime occurredAt) {
+    }
+
+    /** The two paired movements a transfer produces. */
+    public record Transfer(PostedMovement out, PostedMovement in) {
+    }
+
     public record PostedMovement(
             long id,
             UUID productId,
@@ -114,35 +135,88 @@ public class StockLedgerService {
      * concurrent movement left behind a moment later.
      */
     public PostedMovement post(MovementRequest request) {
+        return transactions.execute(status -> postWithin(request));
+    }
+
+    /**
+     * Moves stock between two locations as {@code transfer_out} plus
+     * {@code transfer_in}.
+     *
+     * <p><strong>One transaction for both.</strong> A transfer that wrote the
+     * departure and then failed to write the arrival would destroy stock: the
+     * source is decremented, the destination never credited, and the ledger says
+     * so forever — there is no update to correct it (T4), only a compensating
+     * row that somebody has to notice is needed. Sharing a transaction makes the
+     * pair atomic, so a failure at either end leaves the ledger exactly as it
+     * was.
+     *
+     * <p>This is why {@link #postWithin} exists. {@link #post} opens its own
+     * transaction, which is right for a single movement and wrong here: two
+     * calls to it would be two transactions, and the first would commit.
+     */
+    public Transfer transfer(TransferRequest request) {
+        if (request.fromLocationId().equals(request.toLocationId())) {
+            // Otherwise both movements hit the same product_stock row and net to
+            // zero — a pair of ledger entries recording that nothing happened.
+            throw new ConflictException(
+                    "A transfer needs two different locations", "transfer-same-location");
+        }
+
+        return transactions.execute(status -> {
+            // Out first: it is the movement that can be refused, so failing here
+            // costs nothing. The reverse order would credit the destination and
+            // then discover the source was empty.
+            PostedMovement out = postWithin(new MovementRequest(
+                    request.productId(), request.fromLocationId(), "transfer_out",
+                    request.quantity().abs().negate(), null,
+                    "transfer", request.transferId(), request.reason(), request.occurredAt()));
+
+            PostedMovement in = postWithin(new MovementRequest(
+                    request.productId(), request.toLocationId(), "transfer_in",
+                    request.quantity().abs(), null,
+                    "transfer", request.transferId(), request.reason(), request.occurredAt()));
+
+            return new Transfer(out, in);
+        });
+    }
+
+    /**
+     * Appends one movement inside whatever transaction the caller has already
+     * opened, and returns it with the resulting balance.
+     *
+     * <p>Deliberately has no transaction of its own, so that callers composing
+     * several movements — a transfer here, a multi-line sale in M4 — get all or
+     * nothing. Calling it outside a transaction would still work and would still
+     * be atomic per statement; it simply would not compose.
+     */
+    private PostedMovement postWithin(MovementRequest request) {
         UUID tenantId = TenantContext.currentTenantId()
                 .orElseThrow(() -> new IllegalStateException(
                         "no tenant bound — a ledger write must run inside a tenant-bound request"));
         UUID actor = TenantContext.currentUserId().orElse(null);
 
-        return transactions.execute(status -> {
-            long id;
-            try {
-                id = insert(tenantId, actor, request);
-            } catch (DataAccessException e) {
-                throw translate(e, request);
-            }
+        long id;
+        try {
+            id = insert(tenantId, actor, request);
+        } catch (DataAccessException e) {
+            throw translate(e, request);
+        }
 
-            BigDecimal balanceAfter = jdbc.queryForObject("""
-                    SELECT quantity_on_hand FROM product_stock
-                    WHERE product_id = ? AND location_id = ?
-                    """, BigDecimal.class, request.productId(), request.locationId());
+        BigDecimal balanceAfter = jdbc.queryForObject("""
+                SELECT quantity_on_hand FROM product_stock
+                WHERE product_id = ? AND location_id = ?
+                """, BigDecimal.class, request.productId(), request.locationId());
 
-            return new PostedMovement(
-                    id,
-                    request.productId(),
-                    request.locationId(),
-                    request.movementType(),
-                    request.quantityDelta(),
-                    balanceAfter,
-                    request.unitCost(),
-                    request.reason(),
-                    readOccurredAt(id));
-        });
+        return new PostedMovement(
+                id,
+                request.productId(),
+                request.locationId(),
+                request.movementType(),
+                request.quantityDelta(),
+                balanceAfter,
+                request.unitCost(),
+                request.reason(),
+                readOccurredAt(id));
     }
 
     private long insert(UUID tenantId, UUID actor, MovementRequest request) {
