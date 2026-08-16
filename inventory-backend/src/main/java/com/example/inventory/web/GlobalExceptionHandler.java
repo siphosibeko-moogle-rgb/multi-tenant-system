@@ -1,9 +1,9 @@
 package com.example.inventory.web;
 
 import java.net.URI;
-import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +18,8 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
+
+import com.example.inventory.inventory.InsufficientStockException;
 
 /**
  * Turns exceptions into RFC 9457 problem details, one shape everywhere
@@ -42,12 +44,8 @@ public class GlobalExceptionHandler {
 
     private static final String PROBLEM_BASE = "https://api.example.com/problems/";
 
-    /**
-     * {@code insufficient_privilege}. PostgreSQL uses it both for a missing table
-     * privilege and for a {@code WITH CHECK} rejection — i.e. an attempted
-     * cross-tenant write.
-     */
-    static final String INSUFFICIENT_PRIVILEGE = "42501";
+    /** @see SqlStates#INSUFFICIENT_PRIVILEGE */
+    static final String INSUFFICIENT_PRIVILEGE = SqlStates.INSUFFICIENT_PRIVILEGE;
 
     @ExceptionHandler(UnauthorizedException.class)
     ResponseEntity<ProblemDetail> unauthorized(UnauthorizedException e) {
@@ -88,6 +86,28 @@ public class GlobalExceptionHandler {
                 HttpStatus.UNPROCESSABLE_ENTITY, "Validation failed",
                 "One or more fields are invalid", "validation-failed");
         response.getBody().setProperty("errors", errors);
+        return response;
+    }
+
+    /**
+     * The contract's {@code InsufficientStock} response: 409 carrying
+     * {@code productId}, {@code requested} and {@code available}.
+     *
+     * <p>Those three fields are the difference between an error a cashier can act
+     * on and one they can only stare at. They are safe to disclose because the
+     * caller is authenticated and already inside the tenant that owns the
+     * product — RLS would not have let the write get this far otherwise.
+     */
+    @ExceptionHandler(InsufficientStockException.class)
+    ResponseEntity<ProblemDetail> insufficientStock(InsufficientStockException e) {
+        ResponseEntity<ProblemDetail> response = problem(HttpStatus.CONFLICT,
+                "Insufficient stock",
+                "The requested quantity is not available", "insufficient-stock");
+
+        ProblemDetail body = response.getBody();
+        body.setProperty("productId", e.productId());
+        body.setProperty("requested", e.requested());
+        body.setProperty("available", e.available());
         return response;
     }
 
@@ -163,32 +183,24 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Walks the cause chain for a {@link SQLException} and returns its SQLSTATE.
-     *
-     * <p>Spring wraps the driver's exception at least once, and the SQLSTATE is
-     * only on the original. Reading it off the wrapper's message would be
-     * string-matching on prose that changes between versions.
+     * Delegates to {@link SqlStates#of}. Kept here because this class is where
+     * the reasoning lives and where readers look for it.
      */
     static String sqlStateOf(Throwable e) {
-        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
-            if (cause instanceof SQLException sqlException) {
-                return sqlException.getSQLState();
-            }
-            if (cause.getCause() == cause) {
-                break;
-            }
-        }
-        return null;
+        return SqlStates.of(e);
     }
 
     private static String rootMessage(Throwable e) {
-        Throwable cause = e;
-        while (cause.getCause() != null && cause.getCause() != cause) {
-            cause = cause.getCause();
-        }
-        return cause.getMessage();
+        return SqlStates.rootMessage(e);
     }
 
+    /**
+     * Builds the one response shape this class produces.
+     *
+     * <p>{@code type} is a stable slug rather than the message, so the Android
+     * client can branch on the cause without parsing English that will be
+     * reworded.
+     */
     private static ResponseEntity<ProblemDetail> problem(
             HttpStatus status, String title, String detail, String problemType) {
         ProblemDetail body = ProblemDetail.forStatusAndDetail(status, detail);
@@ -198,12 +210,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(status).body(body);
     }
 
-    private static java.util.Optional<String> currentTraceId() {
+    private static Optional<String> currentTraceId() {
         RequestAttributes attributes = RequestContextHolder.getRequestAttributes();
         if (attributes == null) {
-            return java.util.Optional.empty();
+            return Optional.empty();
         }
         Object id = attributes.getAttribute("traceId", RequestAttributes.SCOPE_REQUEST);
-        return java.util.Optional.ofNullable(id).map(Object::toString);
+        return Optional.ofNullable(id).map(Object::toString);
     }
 }
