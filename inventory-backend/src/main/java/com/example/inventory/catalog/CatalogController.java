@@ -100,10 +100,10 @@ public class CatalogController {
     @PostMapping("/products")
     @PreAuthorize("hasAnyRole('owner', 'manager')")
     ResponseEntity<Product> create(@Valid @RequestBody ProductWriteRequest request) {
-        Product created = catalog.create(request);
+        Versioned<Product> created = catalog.create(request);
         return ResponseEntity.status(HttpStatus.CREATED)
-                .eTag(ETags.of(created.updatedAt()))
-                .body(created);
+                .eTag(created.etag())
+                .body(created.value());
     }
 
     @PatchMapping("/products/{productId}")
@@ -152,7 +152,12 @@ public class CatalogController {
         return ResponseEntity.status(HttpStatus.CREATED).body(catalog.createLocation(request));
     }
 
-    private static ResponseEntity<Product> withETag(Product product) {
-        return ResponseEntity.ok().eTag(ETags.of(product.updatedAt())).body(product);
+    /**
+     * Emits the row version as an {@code ETag} header rather than a body field.
+     * The contract's Product schema has no version property, and HTTP already
+     * has the right place for one.
+     */
+    private static ResponseEntity<Product> withETag(Versioned<Product> product) {
+        return ResponseEntity.ok().eTag(product.etag()).body(product.value());
     }
 }

@@ -135,7 +135,7 @@ class FlywayBindingTest {
     }
 
     @Test
-    @DisplayName("all three migrations actually applied on this context's own database")
+    @DisplayName("all four migrations actually applied on this context's own database")
     void migrationsWereAppliedHere() {
         List<String> versions = queryAsOwner(
                 "SELECT version FROM flyway_schema_history WHERE version IS NOT NULL "
@@ -143,7 +143,7 @@ class FlywayBindingTest {
 
         // Guards the test itself: if this were empty, migrationsRunAsTheSchemaOwner
         // would be asserting over nothing and would pass for the wrong reason.
-        assertThat(versions).containsExactly("1", "2", "3");
+        assertThat(versions).containsExactly("1", "2", "3", "4");
     }
 
     @Test

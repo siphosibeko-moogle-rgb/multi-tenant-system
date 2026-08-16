@@ -63,7 +63,7 @@ public class ProductCatalog {
             SELECT p.id, p.sku, p.barcode, p.name, p.description, p.category_id,
                    p.unit_of_measure, p.cost_price, p.selling_price, p.tax_rate,
                    p.reorder_point, p.is_tracked, p.is_active, p.allow_negative_stock,
-                   p.updated_at,
+                   p.updated_at, p.version,
                    COALESCE(SUM(ps.quantity_on_hand), 0)   AS quantity_on_hand,
                    COALESCE(SUM(ps.quantity_available), 0) AS quantity_available
             FROM products p
@@ -135,9 +135,9 @@ public class ProductCatalog {
         return new ProductPage(page, next);
     }
 
-    public Optional<Product> find(UUID productId) {
+    public Optional<Versioned<Product>> find(UUID productId) {
         return jdbc.query(PRODUCT_COLUMNS + " WHERE p.id = ? AND p.deleted_at IS NULL"
-                        + PRODUCT_GROUP_BY, ProductCatalog::mapProduct, productId)
+                        + PRODUCT_GROUP_BY, ProductCatalog::mapVersioned, productId)
                 .stream().findFirst();
     }
 
@@ -148,13 +148,13 @@ public class ProductCatalog {
      * hold this exact barcode, and the {@code products} policy is what decides
      * which row this connection can see.
      */
-    public Optional<Product> findByBarcode(String barcode) {
+    public Optional<Versioned<Product>> findByBarcode(String barcode) {
         return jdbc.query(PRODUCT_COLUMNS + " WHERE p.barcode = ? AND p.deleted_at IS NULL"
-                        + PRODUCT_GROUP_BY, ProductCatalog::mapProduct, barcode)
+                        + PRODUCT_GROUP_BY, ProductCatalog::mapVersioned, barcode)
                 .stream().findFirst();
     }
 
-    public Product create(ProductWriteRequest request) {
+    public Versioned<Product> create(ProductWriteRequest request) {
         UUID tenantId = TenantContext.currentTenantId()
                 .orElseThrow(() -> new IllegalStateException("no tenant bound"));
         UUID id = UUID.randomUUID();
@@ -224,9 +224,10 @@ public class ProductCatalog {
      *
      * @param ifMatch the ETag from a prior GET, or null to accept last-write-wins
      */
-    public Product update(UUID productId, ProductWriteRequest request, String ifMatch) {
+    public Versioned<Product> update(UUID productId, ProductWriteRequest request,
+                                     String ifMatch) {
         return transactions.execute(status -> {
-            OffsetDateTime expected = ifMatch == null ? null : ETags.parse(ifMatch);
+            Long expectedVersion = ifMatch == null ? null : ETags.parse(ifMatch);
 
             StringBuilder sql = new StringBuilder("""
                     UPDATE products SET
@@ -256,9 +257,12 @@ public class ProductCatalog {
             args.add(request.allowNegativeStock());
             args.add(productId);
 
-            if (expected != null) {
-                sql.append(" AND updated_at = ?");
-                args.add(java.sql.Timestamp.from(expected.toInstant()));
+            if (expectedVersion != null) {
+                // Compare-and-swap in the database. The version is NOT set here:
+                // V4's trg_products_version increments it, so a writer cannot
+                // forget and leave every future If-Match passing forever.
+                sql.append(" AND version = ?");
+                args.add(expectedVersion);
             }
 
             int updated;
@@ -388,6 +392,11 @@ public class ProductCatalog {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value;
+    }
+
+    private static Versioned<Product> mapVersioned(java.sql.ResultSet rs, int row)
+            throws java.sql.SQLException {
+        return new Versioned<>(mapProduct(rs, row), rs.getLong("version"));
     }
 
     private static Product mapProduct(java.sql.ResultSet rs, int row) throws java.sql.SQLException {

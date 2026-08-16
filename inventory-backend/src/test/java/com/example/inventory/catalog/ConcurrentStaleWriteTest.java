@@ -107,13 +107,13 @@ class ConcurrentStaleWriteTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("two concurrent updates from the same read: one wins, one is refused")
     void concurrentUpdatesFromTheSameReadRejectTheLoser() throws Exception {
-        Product original = asTenant(() ->
+        Versioned<Product> original = asTenant(() ->
                 catalog.create(write("SKU-ETAG-" + UUID.randomUUID().toString().substring(0, 6),
                         "Original Name", "10.00")));
 
         // Both editors read the same row and hold the same ETag. This is the
         // situation If-Match exists for.
-        String sharedETag = ETags.of(original.updatedAt());
+        String sharedETag = original.etag();
         assertThat(sharedETag).as("a product read must carry a version").isNotBlank();
 
         AtomicInteger succeeded = new AtomicInteger();
@@ -130,8 +130,8 @@ class ConcurrentStaleWriteTest extends AbstractIntegrationTest {
                 pool.submit(() -> {
                     try {
                         startTogether.await();
-                        asTenant(() -> catalog.update(original.id(),
-                                write(original.sku(), editor, "20.00"), sharedETag));
+                        asTenant(() -> catalog.update(original.value().id(),
+                                write(original.value().sku(), editor, "20.00"), sharedETag));
                         succeeded.incrementAndGet();
                         winner.set(editor);
                     } catch (PreconditionFailedException expected) {
@@ -165,7 +165,7 @@ class ConcurrentStaleWriteTest extends AbstractIntegrationTest {
                         + "writes would succeed and nothing would notice.")
                 .isEqualTo(1);
 
-        assertThat(readAsOwner("SELECT name FROM products WHERE id = ?", original.id()))
+        assertThat(readAsOwner("SELECT name FROM products WHERE id = ?", original.value().id()))
                 .as("the surviving row must be one editor's work, not a mixture")
                 .isEqualTo(winner.get());
     }
@@ -173,22 +173,22 @@ class ConcurrentStaleWriteTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("a stale ETag is refused even with no competing writer")
     void aStaleETagIsRefused() throws Exception {
-        Product original = asTenant(() ->
+        Versioned<Product> original = asTenant(() ->
                 catalog.create(write("SKU-STALE-" + UUID.randomUUID().toString().substring(0, 6),
                         "Before", "10.00")));
-        String staleETag = ETags.of(original.updatedAt());
+        String staleETag = original.etag();
 
-        Product updated = asTenant(() ->
-                catalog.update(original.id(), write(original.sku(), "After", "11.00"), staleETag));
-        assertThat(updated.name()).isEqualTo("After");
+        Versioned<Product> updated = asTenant(() ->
+                catalog.update(original.value().id(), write(original.value().sku(), "After", "11.00"), staleETag));
+        assertThat(updated.value().name()).isEqualTo("After");
 
         // The same ETag a second time is now stale.
         assertThatThrownBy(() -> asTenant(() ->
-                catalog.update(original.id(), write(original.sku(), "Too Late", "12.00"),
+                catalog.update(original.value().id(), write(original.value().sku(), "Too Late", "12.00"),
                         staleETag)))
                 .isInstanceOf(PreconditionFailedException.class);
 
-        assertThat(readAsOwner("SELECT name FROM products WHERE id = ?", original.id()))
+        assertThat(readAsOwner("SELECT name FROM products WHERE id = ?", original.value().id()))
                 .as("the refused write must not have been applied")
                 .isEqualTo("After");
     }
@@ -196,17 +196,17 @@ class ConcurrentStaleWriteTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("the ETag changes when the row changes")
     void theETagAdvances() throws Exception {
-        Product original = asTenant(() ->
+        Versioned<Product> original = asTenant(() ->
                 catalog.create(write("SKU-ADV-" + UUID.randomUUID().toString().substring(0, 6),
                         "First", "10.00")));
-        String first = ETags.of(original.updatedAt());
+        String first = original.etag();
 
-        Product updated = asTenant(() ->
-                catalog.update(original.id(), write(original.sku(), "Second", "11.00"), first));
+        Versioned<Product> updated = asTenant(() ->
+                catalog.update(original.value().id(), write(original.value().sku(), "Second", "11.00"), first));
 
         // If this failed, every If-Match would pass forever and the feature
         // would be decoration.
-        assertThat(ETags.of(updated.updatedAt()))
+        assertThat(updated.etag())
                 .as("an ETag that never changes cannot detect a stale write")
                 .isNotEqualTo(first);
     }
@@ -214,35 +214,35 @@ class ConcurrentStaleWriteTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("omitting If-Match is last-write-wins, deliberately")
     void withoutIfMatchTheWriteProceeds() throws Exception {
-        Product original = asTenant(() ->
+        Versioned<Product> original = asTenant(() ->
                 catalog.create(write("SKU-NOIF-" + UUID.randomUUID().toString().substring(0, 6),
                         "Before", "10.00")));
 
-        asTenant(() -> catalog.update(original.id(), write(original.sku(), "Once", "11.00"), null));
-        Product second = asTenant(() ->
-                catalog.update(original.id(), write(original.sku(), "Twice", "12.00"), null));
+        asTenant(() -> catalog.update(original.value().id(), write(original.value().sku(), "Once", "11.00"), null));
+        Versioned<Product> second = asTenant(() ->
+                catalog.update(original.value().id(), write(original.value().sku(), "Twice", "12.00"), null));
 
         // The contract does not mark If-Match required, so this is the documented
         // behaviour rather than a gap. Asserted so that making it mandatory later
         // is a visible decision rather than an accident.
-        assertThat(second.name()).isEqualTo("Twice");
+        assertThat(second.value().name()).isEqualTo("Twice");
     }
 
     @Test
     @DisplayName("a malformed If-Match is refused, not ignored")
     void aMalformedIfMatchIsRefused() throws Exception {
-        Product original = asTenant(() ->
+        Versioned<Product> original = asTenant(() ->
                 catalog.create(write("SKU-BAD-" + UUID.randomUUID().toString().substring(0, 6),
                         "Before", "10.00")));
 
         // Ignoring it would silently downgrade a conditional write to an
         // unconditional one, and report success for a condition never applied.
         assertThatThrownBy(() -> asTenant(() ->
-                catalog.update(original.id(), write(original.sku(), "After", "11.00"),
+                catalog.update(original.value().id(), write(original.value().sku(), "After", "11.00"),
                         "\"not-an-etag\"")))
                 .isInstanceOf(PreconditionFailedException.class);
 
-        assertThat(readAsOwner("SELECT name FROM products WHERE id = ?", original.id()))
+        assertThat(readAsOwner("SELECT name FROM products WHERE id = ?", original.value().id()))
                 .isEqualTo("Before");
     }
 }

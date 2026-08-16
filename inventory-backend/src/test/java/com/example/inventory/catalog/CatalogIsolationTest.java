@@ -107,12 +107,12 @@ class CatalogIsolationTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("both tenants hold the same SKU and barcode simultaneously")
     void twoTenantsMayHoldTheSameSkuAndBarcode() throws Exception {
-        Product inA = asTenant(tenantA, () -> catalog.create(beans("Beans (A's listing)")));
-        Product inB = asTenant(tenantB, () -> catalog.create(beans("Beans (B's listing)")));
+        Versioned<Product> inA = asTenant(tenantA, () -> catalog.create(beans("Beans (A's listing)")));
+        Versioned<Product> inB = asTenant(tenantB, () -> catalog.create(beans("Beans (B's listing)")));
 
-        assertThat(inA.id()).isNotEqualTo(inB.id());
-        assertThat(inA.sku()).isEqualTo(inB.sku()).isEqualTo(SHARED_SKU);
-        assertThat(inA.barcode()).isEqualTo(inB.barcode()).isEqualTo(SHARED_BARCODE);
+        assertThat(inA.value().id()).isNotEqualTo(inB.value().id());
+        assertThat(inA.value().sku()).isEqualTo(inB.value().sku()).isEqualTo(SHARED_SKU);
+        assertThat(inA.value().barcode()).isEqualTo(inB.value().barcode()).isEqualTo(SHARED_BARCODE);
 
         // Both rows genuinely coexist. Read as the owner (superuser, so RLS does
         // not filter) because the point is what the TABLE holds, not what either
@@ -127,11 +127,11 @@ class CatalogIsolationTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("barcode lookup returns only the caller's product")
     void barcodeLookupReturnsOnlyTheCallersProduct() throws Exception {
-        Product inA = asTenant(tenantA, () -> catalog.create(
+        Versioned<Product> inA = asTenant(tenantA, () -> catalog.create(
                 new ProductWriteRequest("SKU-LOOKUP", "7001112223334", "A's Cola", null, null,
                         "each", new BigDecimal("5.00"), new BigDecimal("9.99"),
                         new BigDecimal("0.15"), null, null, null, true, false, null)));
-        Product inB = asTenant(tenantB, () -> catalog.create(
+        Versioned<Product> inB = asTenant(tenantB, () -> catalog.create(
                 new ProductWriteRequest("SKU-LOOKUP", "7001112223334", "B's Cola", null, null,
                         "each", new BigDecimal("6.00"), new BigDecimal("10.99"),
                         new BigDecimal("0.15"), null, null, null, true, false, null)));
@@ -142,18 +142,18 @@ class CatalogIsolationTest extends AbstractIntegrationTest {
         assertThat(foundByA).isPresent();
         assertThat(foundByB).isPresent();
 
-        assertThat(foundByA.get().id())
+        assertThat(foundByA.get().value().id())
                 .as("A must get A's product — the query has no tenant predicate, so this is RLS "
                         + "choosing the row, not the SQL")
-                .isEqualTo(inA.id());
-        assertThat(foundByA.get().name()).isEqualTo("A's Cola");
+                .isEqualTo(inA.value().id());
+        assertThat(foundByA.get().value().name()).isEqualTo("A's Cola");
 
-        assertThat(foundByB.get().id())
+        assertThat(foundByB.get().value().id())
                 .as("and B must get B's, from the identical query")
-                .isEqualTo(inB.id());
-        assertThat(foundByB.get().name()).isEqualTo("B's Cola");
+                .isEqualTo(inB.value().id());
+        assertThat(foundByB.get().value().name()).isEqualTo("B's Cola");
 
-        assertThat(foundByA.get().id()).isNotEqualTo(foundByB.get().id());
+        assertThat(foundByA.get().value().id()).isNotEqualTo(foundByB.get().value().id());
     }
 
     @Test
@@ -195,20 +195,20 @@ class CatalogIsolationTest extends AbstractIntegrationTest {
     @Test
     @DisplayName("tenant A cannot read, update or delete B's product")
     void crossTenantAccessIsNotFound() throws Exception {
-        Product inB = asTenant(tenantB, () -> catalog.create(
+        Versioned<Product> inB = asTenant(tenantB, () -> catalog.create(
                 new ProductWriteRequest("SKU-PRIVATE", null, "B's Secret", null, null, "each",
                         BigDecimal.ONE, BigDecimal.TEN, new BigDecimal("0.15"),
                         null, null, null, true, false, null)));
 
-        assertThat(asTenant(tenantA, () -> catalog.find(inB.id())))
+        assertThat(asTenant(tenantA, () -> catalog.find(inB.value().id())))
                 .as("invisible, so 404 rather than 403 (T8)")
                 .isEmpty();
-        assertThat(asTenant(tenantA, () -> catalog.deactivate(inB.id())))
+        assertThat(asTenant(tenantA, () -> catalog.deactivate(inB.value().id())))
                 .as("and not deletable either")
                 .isFalse();
 
         assertThat(countAsOwner("SELECT count(*) FROM products WHERE id = ? AND deleted_at IS NULL",
-                inB.id()))
+                inB.value().id()))
                 .as("B's product must be untouched")
                 .isEqualTo(1L);
     }
