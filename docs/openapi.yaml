@@ -175,7 +175,23 @@ application/json:
 schema: { $ref: '#/components/schemas/CurrentUser' }
 
 # ------------------------------------------------------------------
-# Users (owner/manager only)
+# Users
+#
+# Read is owner + manager. Every MUTATION is owner-only.
+#
+# This header previously read "owner/manager only", which contradicted the
+# UserRole table below — that table gives "users" to owner and lists manager as
+# "catalog, purchasing, reports, adjustments", without users. The UserRole table
+# is the source of truth; this header was the half that was wrong.
+#
+# The reason mutations are owner-only: POST /users and PATCH /users/{userId}
+# both take a role. A manager holding either has a one-call path to owner —
+# invite an owner account, or promote themselves — so a manager who could write
+# here could take the business. Reading the team grants nothing, so it stays
+# open to manager.
+#
+# Enforced by @PreAuthorize in UsersController and asserted both ways (allow
+# AND deny, per role) in RoleEnforcementTest.
 # ------------------------------------------------------------------
 /users:
 get:
