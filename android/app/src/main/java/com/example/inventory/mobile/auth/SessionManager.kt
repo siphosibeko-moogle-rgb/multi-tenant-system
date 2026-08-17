@@ -1,0 +1,92 @@
+package com.example.inventory.mobile.auth
+
+import com.example.inventory.api.apis.AuthenticationApi
+import com.example.inventory.api.models.LoginRequest
+import com.example.inventory.mobile.net.ApiError
+import com.example.inventory.mobile.net.SessionExpiryHandler
+import com.example.inventory.mobile.net.toApiError
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+/**
+ * Who is signed in, and the one place that changes.
+ *
+ * The authenticator calls [onSessionExpired] from an OkHttp thread when a
+ * refresh fails; the UI observes [state] and navigates to login. Keeping that in
+ * one object means a failed refresh and an explicit sign-out end up in exactly
+ * the same place, rather than the network layer having its own quiet idea of
+ * whether the user is logged in.
+ */
+@Singleton
+class SessionManager @Inject constructor(
+    private val tokens: TokenStore,
+    private val authApi: AuthenticationApi,
+) : SessionExpiryHandler {
+
+    sealed interface State {
+        data object LoggedOut : State
+        data class LoggedIn(val displayName: String, val tenantName: String) : State
+    }
+
+    private val _state = MutableStateFlow<State>(
+        if (tokens.accessToken() != null) State.LoggedIn("", "") else State.LoggedOut
+    )
+    val state: StateFlow<State> = _state.asStateFlow()
+
+    /**
+     * @return null on success, or the error to show.
+     *
+     * Login failures are deliberately indistinguishable server-side — wrong
+     * password and unknown email return the same 401 with the same body — so
+     * there is nothing here to tell apart either.
+     */
+    suspend fun login(email: String, password: String, tenantSlug: String?): ApiError? {
+        return try {
+            val response = authApi.authLoginPost(
+                LoginRequest(
+                    email = email.trim(),
+                    password = password,
+                    tenantSlug = tenantSlug?.trim()?.takeIf { it.isNotBlank() },
+                    deviceLabel = "Android",
+                )
+            )
+
+            if (!response.isSuccessful) {
+                return response.toApiError()
+            }
+
+            val body = response.body()
+            val access = body?.accessToken
+            val refresh = body?.refreshToken
+            if (access == null || refresh == null) {
+                // Both are optional in the contract's AuthTokens schema, so the
+                // generated model makes them nullable. A 200 without them is a
+                // server bug, but the client still has to say something useful
+                // rather than throw a null-pointer at the user.
+                return ApiError("Signed in, but the server did not return a session token.")
+            }
+
+            tokens.save(access, refresh)
+            _state.value = State.LoggedIn(
+                displayName = body.user?.fullName.orEmpty(),
+                tenantName = body.user?.tenant?.name.orEmpty(),
+            )
+            null
+        } catch (e: Exception) {
+            ApiError.fromNetworkFailure(e)
+        }
+    }
+
+    /** Called by [TokenAuthenticator] when a refresh fails, and on sign-out. */
+    override fun onSessionExpired() {
+        tokens.clear()
+        _state.value = State.LoggedOut
+    }
+
+    fun signOut() {
+        onSessionExpired()
+    }
+}
