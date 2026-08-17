@@ -1,0 +1,9 @@
+# Points at this machine's SDK path. Never committed.
+local.properties
+
+.gradle/
+build/
+*.iml
+.idea/
+captures/
+.cxx/

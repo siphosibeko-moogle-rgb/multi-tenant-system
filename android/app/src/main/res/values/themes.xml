@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose supplies the real theming; this only has to keep the platform
+         happy before setContent runs. Visual polish is explicitly out of scope
+         for M3. -->
+    <style name="Theme.Inventory" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

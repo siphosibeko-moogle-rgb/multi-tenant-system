@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only overlay.
+
+  The backend runs on the developer's laptop over plain HTTP, and 10.0.2.2 is
+  how the emulator reaches the host's loopback. Cleartext has to be allowed for
+  that one host and nowhere else.
+
+  This file exists in src/debug so the permission cannot reach a release build
+  by accident: release has no network security config at all and inherits the
+  platform default, which refuses cleartext.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:networkSecurityConfig="@xml/network_security_config"
+        tools:replace="android:networkSecurityConfig" />
+
+</manifest>

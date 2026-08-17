@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext for the emulator's host loopback ONLY.
+
+  cleartextTrafficPermitted="false" on the base config is the important half:
+  it means every host except the one named below is still required to use TLS,
+  even in a debug build. A blanket android:usesCleartextTraffic="true" would
+  have been one attribute and would have quietly allowed plain HTTP to
+  anywhere, including a real server someone points a debug build at.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- The host machine, as seen from inside the Android emulator. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

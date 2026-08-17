@@ -1,0 +1,111 @@
+# Version catalog.
+#
+# Every version here was checked against the repository that serves it during
+# M3, not recalled. Android tooling moves fast enough that a remembered version
+# number is usually a wrong one — and two of the constraints below were
+# discovered by the build refusing to configure, not by reading release notes.
+#
+# The version constraints here are a closed chain, discovered by the build
+# refusing to configure rather than from release notes. Changing any one of the
+# first three means changing all of them:
+#
+#   hilt 2.60.1  requires AGP >= 9.0.0 — it says so and refuses to apply.
+#   AGP 9.x      requires Gradle >= 9.6, and REJECTS the
+#                org.jetbrains.kotlin.android plugin: "no longer required for
+#                Kotlin support since AGP 9.0". AGP applies Kotlin itself.
+#   Gradle 9.7   is therefore the wrapper version. AGP 8.x cannot run on it at
+#                all — it uses org.gradle.api.problems.internal.InternalProblems,
+#                removed in Gradle 9.6.
+#
+# The first attempt at this project pinned AGP 8.13.2 + Gradle 9.5 to keep the
+# familiar explicit Kotlin plugin. Hilt closed that door. Worth recording so the
+# next person does not retry the same downgrade: there is no combination that
+# uses current Hilt and the standalone Kotlin plugin together.
+#
+# Note there is no `kotlin` version below and no kotlin-android plugin. AGP
+# supplies the Kotlin compiler; the only Kotlin plugin left is the Compose one,
+# whose version must match the Kotlin that AGP brings.
+#
+#   retrofit / okhttp — 2.12.0 and 4.12.0, not 3.0.0 and 5.5.0. The OpenAPI
+#   generator's jvm-retrofit2 templates are written against Retrofit 2 and
+#   OkHttp 4. Generated code has to compile untouched — we do not hand-edit it —
+#   so the client libraries follow the generator rather than the other way
+#   round. Revisit when the generator ships Retrofit 3 templates.
+
+# The AndroidX versions below are one release behind the newest, and that is
+# forced by the SDK rather than chosen. compose-bom 2026.08.00, core 1.19.0,
+# lifecycle 2.11.0 and hilt-navigation-compose 1.4.0 all declare
+# "compileSdkVersion 37 or later" in their AAR metadata — 17 dependencies failed
+# checkDebugAarMetadata on it. API 37 is not a released platform: Google's
+# repository2-3.xml offers platforms up to android-36 plus android-CANARY, so
+# there is no stable SDK to compile against.
+#
+# So these are the newest versions that build against the newest RELEASED
+# Android SDK. Bump them when android-37 ships as a stable platform, together
+# with compileSdk.
+
+[versions]
+agp = "9.3.1"
+kotlin = "2.3.21"
+ksp = "2.3.11"
+hilt = "2.60.1"
+openapi-generator = "7.14.0"
+
+compose-bom = "2026.06.01"
+core-ktx = "1.18.0"
+activity-compose = "1.12.4"
+lifecycle = "2.10.0"
+navigation-compose = "2.9.7"
+hilt-navigation-compose = "1.3.0"
+datastore = "1.2.0"
+security-crypto = "1.1.0"
+
+retrofit = "2.12.0"
+okhttp = "4.12.0"
+moshi = "1.15.2"
+coroutines = "1.11.0"
+
+junit = "4.13.2"
+
+[libraries]
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
+androidx-lifecycle-runtime-ktx = { module = "androidx.lifecycle:lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigation-compose" }
+
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+
+hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
+hilt-compiler = { module = "com.google.dagger:hilt-compiler", version.ref = "hilt" }
+androidx-hilt-navigation-compose = { module = "androidx.hilt:hilt-navigation-compose", version.ref = "hilt-navigation-compose" }
+
+androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
+androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "security-crypto" }
+
+retrofit = { module = "com.squareup.retrofit2:retrofit", version.ref = "retrofit" }
+retrofit-converter-moshi = { module = "com.squareup.retrofit2:converter-moshi", version.ref = "retrofit" }
+retrofit-converter-scalars = { module = "com.squareup.retrofit2:converter-scalars", version.ref = "retrofit" }
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+okhttp-logging = { module = "com.squareup.okhttp3:logging-interceptor", version.ref = "okhttp" }
+okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver", version.ref = "okhttp" }
+moshi = { module = "com.squareup.moshi:moshi", version.ref = "moshi" }
+moshi-kotlin = { module = "com.squareup.moshi:moshi-kotlin", version.ref = "moshi" }
+moshi-adapters = { module = "com.squareup.moshi:moshi-adapters", version.ref = "moshi" }
+
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+
+junit = { module = "junit:junit", version.ref = "junit" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+openapi-generator = { id = "org.openapi.generator", version.ref = "openapi-generator" }
