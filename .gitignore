@@ -9,6 +9,16 @@ out/
 # Keep the Maven wrapper jar: it is how ./mvnw bootstraps on a clean checkout.
 !.mvn/wrapper/maven-wrapper.jar
 
+# Same for the Gradle wrapper jar, and for the same reason: ./gradlew IS this
+# jar plus a shell script, so without it a clean checkout fails immediately with
+# "Unable to access jarfile .../gradle-wrapper.jar" — before it can download
+# anything that would fix the problem.
+#
+# The `*.jar` rule above is what swallowed it. That rule is right for build
+# output and wrong for the two jars that are source, so both are named here
+# explicitly rather than the rule being loosened.
+!android/gradle/wrapper/gradle-wrapper.jar
+
 # --- Eclipse ----------------------------------------------------------------
 # Workspace state, not project source. Two workspaces exist in this tree
 # (multi-tenant-system/.metadata and inventory-platform/.metadata).
