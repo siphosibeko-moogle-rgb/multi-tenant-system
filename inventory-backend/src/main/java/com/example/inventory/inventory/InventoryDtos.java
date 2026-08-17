@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.UUID;
 
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
@@ -36,6 +37,21 @@ public final class InventoryDtos {
             @NotNull BigDecimal quantityDelta,
             @NotNull @Size(min = 1, max = 500) String reason,
             @PositiveOrZero BigDecimal unitCost,
+            OffsetDateTime occurredAt) {
+    }
+
+    /**
+     * @param quantity positive. Direction comes from the two movement types the
+     *                 service writes, not from a sign the caller supplies —
+     *                 there is no such thing as a negative transfer, only a
+     *                 transfer the other way.
+     */
+    public record TransferRequest(
+            @NotNull UUID productId,
+            @NotNull UUID fromLocationId,
+            @NotNull UUID toLocationId,
+            @NotNull @Positive BigDecimal quantity,
+            @Size(max = 500) String reason,
             OffsetDateTime occurredAt) {
     }
 

@@ -135,7 +135,31 @@ public class StockLedgerService {
      * concurrent movement left behind a moment later.
      */
     public PostedMovement post(MovementRequest request) {
-        return transactions.execute(status -> postWithin(request));
+        return withAvailableFilledIn(() -> transactions.execute(status -> postWithin(request)));
+    }
+
+    /**
+     * Runs a ledger write and, if it is refused for want of stock, fills in how
+     * much there actually was.
+     *
+     * <p>The read has to happen out here, after the transaction has ended. Inside
+     * it, the refusal has already aborted the transaction and PostgreSQL rejects
+     * every further statement on that connection — so the balance simply cannot
+     * be read at the point the exception is constructed. An earlier version tried
+     * anyway, caught the resulting failure and substituted zero, which meant
+     * `available` was always zero no matter what was on the shelf. The HTTP test
+     * caught it; the service-level tests never would have, because they only
+     * asserted that the exception carried the product id.
+     */
+    private <T> T withAvailableFilledIn(java.util.function.Supplier<T> work) {
+        try {
+            return work.get();
+        } catch (InsufficientStockException e) {
+            if (e.available() != null) {
+                throw e;
+            }
+            throw e.withAvailable(availableFor(e.productId(), e.locationId()));
+        }
     }
 
     /**
@@ -155,6 +179,10 @@ public class StockLedgerService {
      * calls to it would be two transactions, and the first would commit.
      */
     public Transfer transfer(TransferRequest request) {
+        return withAvailableFilledIn(() -> transferWithin(request));
+    }
+
+    private Transfer transferWithin(TransferRequest request) {
         if (request.fromLocationId().equals(request.toLocationId())) {
             // Otherwise both movements hit the same product_stock row and net to
             // zero — a pair of ledger entries recording that nothing happened.
@@ -269,10 +297,11 @@ public class StockLedgerService {
 
         if (CHECK_VIOLATION.equals(sqlState) && message != null
                 && message.contains(OVERSELL_MESSAGE)) {
+            // available is deliberately left unknown here — see
+            // withAvailableFilledIn. Reading it now would fail: this
+            // transaction is already aborted.
             return new InsufficientStockException(
-                    request.productId(),
-                    request.quantityDelta().abs(),
-                    availableFor(request));
+                    request.productId(), request.locationId(), request.quantityDelta().abs());
         }
         if (SqlStates.FOREIGN_KEY_VIOLATION.equals(sqlState)) {
             return new NotFoundException("No such product or location in this business");
@@ -289,15 +318,18 @@ public class StockLedgerService {
      * that has never moved has no {@code product_stock} row, and reporting zero
      * is more useful than failing while building an error.
      */
-    private BigDecimal availableFor(MovementRequest request) {
+    private BigDecimal availableFor(UUID productId, UUID locationId) {
         try {
             return jdbc.query("""
                     SELECT quantity_available FROM product_stock
                     WHERE product_id = ? AND location_id = ?
                     """,
                     rs -> rs.next() ? rs.getBigDecimal(1) : BigDecimal.ZERO,
-                    request.productId(), request.locationId());
+                    productId, locationId);
         } catch (DataAccessException ignored) {
+            // A product that has never moved has no product_stock row, so zero
+            // is the honest answer. This catch is now a genuine fallback rather
+            // than the silent default it used to be.
             return BigDecimal.ZERO;
         }
     }

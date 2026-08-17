@@ -23,24 +23,51 @@ import java.util.UUID;
 public class InsufficientStockException extends RuntimeException {
 
     private final UUID productId;
+    private final UUID locationId;
     private final BigDecimal requested;
     private final BigDecimal available;
 
-    public InsufficientStockException(UUID productId, BigDecimal requested, BigDecimal available) {
+    /**
+     * Raised with {@code available} unknown.
+     *
+     * <p>It cannot be filled in at the point of failure: the refusal has aborted
+     * the transaction, and PostgreSQL rejects every subsequent statement on that
+     * connection until it ends. A read attempted there fails, and an earlier
+     * version of this code caught that failure and substituted zero — so the
+     * field was <em>always</em> zero, and the number a cashier would have acted
+     * on was fiction. {@code StockLedgerService} fills it in after the rollback.
+     */
+    public InsufficientStockException(UUID productId, UUID locationId, BigDecimal requested) {
+        this(productId, locationId, requested, null);
+    }
+
+    private InsufficientStockException(UUID productId, UUID locationId,
+                                       BigDecimal requested, BigDecimal available) {
         super("Insufficient stock for product " + productId);
         this.productId = productId;
+        this.locationId = locationId;
         this.requested = requested;
         this.available = available;
+    }
+
+    /** A copy carrying the balance, read once the transaction has ended. */
+    public InsufficientStockException withAvailable(BigDecimal actuallyAvailable) {
+        return new InsufficientStockException(productId, locationId, requested, actuallyAvailable);
     }
 
     public UUID productId() {
         return productId;
     }
 
+    public UUID locationId() {
+        return locationId;
+    }
+
     public BigDecimal requested() {
         return requested;
     }
 
+    /** Null only if the follow-up read also failed. */
     public BigDecimal available() {
         return available;
     }

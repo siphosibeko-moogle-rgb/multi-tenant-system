@@ -1,6 +1,7 @@
 package com.example.inventory.inventory;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 
 import org.springframework.format.annotation.DateTimeFormat;
@@ -18,6 +19,7 @@ import com.example.inventory.inventory.InventoryDtos.AdjustmentRequest;
 import com.example.inventory.inventory.InventoryDtos.MovementPage;
 import com.example.inventory.inventory.InventoryDtos.StockMovement;
 import com.example.inventory.inventory.InventoryDtos.StockStatusPage;
+import com.example.inventory.inventory.InventoryDtos.TransferRequest;
 import com.example.inventory.inventory.StockLedgerService.MovementRequest;
 import com.example.inventory.web.NotFoundException;
 
@@ -83,7 +85,57 @@ public class InventoryController {
                 request.reason(),
                 request.occurredAt()));
 
-        return ResponseEntity.status(HttpStatus.CREATED).body(new StockMovement(
+        return ResponseEntity.status(HttpStatus.CREATED).body(toDto(posted));
+    }
+
+    /**
+     * Moves stock between two locations.
+     *
+     * <p>Open to {@code clerk} as well as owner and manager, unlike an
+     * adjustment. A transfer records something that physically happened — a
+     * crate went from the back room to the shop floor — which is squarely
+     * "receive stock, count" work. An adjustment asserts the count itself was
+     * wrong, which is why that one stays with the roles accountable for it.
+     *
+     * <p>Returns both movements, as the contract's array of two specifies. The
+     * pair is written in one transaction, so a caller that receives 201 knows
+     * both halves landed.
+     */
+    @PostMapping("/transfers")
+    @PreAuthorize("hasAnyRole('owner', 'manager', 'clerk')")
+    ResponseEntity<List<StockMovement>> transfer(@Valid @RequestBody TransferRequest request) {
+        var transferred = ledger.transfer(new StockLedgerService.TransferRequest(
+                request.productId(),
+                request.fromLocationId(),
+                request.toLocationId(),
+                request.quantity(),
+                request.reason(),
+                UUID.randomUUID(),
+                request.occurredAt()));
+
+        return ResponseEntity.status(HttpStatus.CREATED).body(List.of(
+                toDto(transferred.out()), toDto(transferred.in())));
+    }
+
+    @GetMapping
+    @PreAuthorize("hasAnyRole('owner', 'manager', 'clerk', 'viewer')")
+    ResponseEntity<StockStatusPage> stock(@RequestParam(required = false) String cursor,
+                                          @RequestParam(required = false) Integer limit,
+                                          @RequestParam(required = false) UUID locationId,
+                                          @RequestParam(required = false) String stockState) {
+        return ResponseEntity.ok(queries.stock(cursor, limit, locationId, stockState));
+    }
+
+    /**
+     * The service's posted-movement view, as the contract's StockMovement.
+     *
+     * <p>productName and createdByName are null here rather than joined: this is
+     * a write response echoing what the caller just sent, and the caller knows
+     * which product it named. The list endpoint joins them because a list is
+     * read by someone who does not.
+     */
+    private static StockMovement toDto(StockLedgerService.PostedMovement posted) {
+        return new StockMovement(
                 posted.id(),
                 posted.productId(),
                 null,
@@ -97,16 +149,7 @@ public class InventoryController {
                 posted.reason(),
                 posted.occurredAt(),
                 null,
-                null));
-    }
-
-    @GetMapping
-    @PreAuthorize("hasAnyRole('owner', 'manager', 'clerk', 'viewer')")
-    ResponseEntity<StockStatusPage> stock(@RequestParam(required = false) String cursor,
-                                          @RequestParam(required = false) Integer limit,
-                                          @RequestParam(required = false) UUID locationId,
-                                          @RequestParam(required = false) String stockState) {
-        return ResponseEntity.ok(queries.stock(cursor, limit, locationId, stockState));
+                null);
     }
 
     @GetMapping("/movements")
