@@ -107,18 +107,46 @@ backend's stock reflects it
 ## M4 — Sales and returns
 *~1 week*
 
-**Build**
-- `POST /sales` — sale, lines and one movement per line in one transaction
-- Sale numbering, void, partial returns (with a restock flag for damaged goods)
-- Idempotency on `clientRequestId` / `Idempotency-Key`
+> **Part of this landed early, in M3.** The Android slice needed a real sale
+> endpoint, so `POST /sales` was pulled forward — minimally, and deliberately
+> not the whole milestone. What exists now and what M4 still owes is spelled out
+> below rather than left for someone to rediscover by reading the code.
+
+**Already done (M3)**
+- [x] `POST /sales` — sale, lines and one `sale` movement per line, all in one
+transaction through `StockLedgerService.postWithin`. A line that oversells
+rejects the whole sale.
+- [x] Idempotency on `clientRequestId`, including the concurrent case: a replay
+returns the original sale with 200 and moves stock once.
+- [x] `soldAt` accepted from the client, defaulting to now.
+
+**Still owed by M4**
+- `Idempotency-Key` **header** as an alternative to the `clientRequestId` body
+field. The contract declares the header on this endpoint and it is currently
+ignored — only the body field is honoured.
+- **Sale numbering.** M3 generates `S-<millis>-<random>` purely to satisfy the
+`(tenant_id, sale_number)` unique constraint. It is not a receipt number a
+human would read out over the phone, and it has no per-tenant sequence.
+- **Void** and **partial returns**, with the restock flag for damaged goods.
+- `GET /sales`, `GET /sales/{saleId}` — the contract declares them; only POST
+is implemented.
+- Line-level `unitCost` is captured from the product's current cost. Whether a
+sale should snapshot cost at the moment of sale (for margin reporting that
+survives a cost change) is an M4 decision, not something M3 settled.
 
 **Done when**
-- A sale where line 3 oversells persists **nothing** — no sale, no lines, no movements
-- Posting the same `clientRequestId` twice returns the original sale and moves
-stock once
+- ~~A sale where line 3 oversells persists **nothing**~~ — done in M3,
+`SaleTest.aLineThatOversellsPersistsNothing`
+- ~~Posting the same `clientRequestId` twice returns the original sale and moves
+stock once~~ — done in M3,
+`SaleTest.Idempotency.replayReturnsTheOriginalAndMovesStockOnce`
+- ~~A sale recorded with a past `soldAt` lands in the right day bucket for the
+tenant's timezone~~ — done in M3,
+`SaleTest.aLateNightSaleLandsOnTheTenantsBusinessDay`, which also asserts the
+naive UTC date would be the *wrong* day, so the test cannot pass against a
+server that ignores the tenant's timezone
 - Voiding returns exactly the sold quantity and leaves the original sale row intact
-- A sale recorded with a past `soldAt` lands in the right day bucket for the
-tenant's timezone, not the server's
+- The `Idempotency-Key` header behaves identically to the body field
 
 ---
 

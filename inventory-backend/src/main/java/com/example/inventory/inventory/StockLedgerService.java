@@ -213,11 +213,20 @@ public class StockLedgerService {
      * opened, and returns it with the resulting balance.
      *
      * <p>Deliberately has no transaction of its own, so that callers composing
-     * several movements — a transfer here, a multi-line sale in M4 — get all or
+     * several movements — a transfer here, a multi-line sale — get all or
      * nothing. Calling it outside a transaction would still work and would still
      * be atomic per statement; it simply would not compose.
+     *
+     * <p><strong>The caller must already be inside a transaction.</strong> Public
+     * so {@code SaleService} can put one movement per line alongside the sale and
+     * its lines in a single transaction; that does not weaken T5, because this
+     * class is still the only one that issues an INSERT into
+     * {@code stock_movements}. A caller that forgets the transaction gets
+     * per-statement atomicity and a half-recorded sale on the second line's
+     * refusal — which is what {@code SaleTest.aLineThatOversellsPersistsNothing}
+     * exists to catch.
      */
-    private PostedMovement postWithin(MovementRequest request) {
+    public PostedMovement postWithin(MovementRequest request) {
         UUID tenantId = TenantContext.currentTenantId()
                 .orElseThrow(() -> new IllegalStateException(
                         "no tenant bound — a ledger write must run inside a tenant-bound request"));

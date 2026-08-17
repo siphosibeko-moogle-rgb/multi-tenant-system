@@ -1383,16 +1383,40 @@ components:
       description: The operation would drive stock negative
       content:
         application/problem+json:
-          schema:
-            allOf:
-              - $ref: '#/components/schemas/Problem'
-              - type: object
-                properties:
-                  productId: { type: string, format: uuid }
-                  requested: { type: number }
-                  available: { type: number }
+          schema: { $ref: '#/components/schemas/InsufficientStockProblem' }
 
   schemas:
+
+    # A named schema, not an inline one under responses, and that distinction is
+    # the whole point. Code generators emit types for components/schemas; an
+    # inline schema under a response gets no type at all, so a client receiving
+    # this 409 had productId, requested and available sitting in the body with
+    # no way to reach them except by parsing the raw error itself.
+    #
+    # Found during M3: the generated Kotlin client had a `Problem` model with
+    # none of these three fields and no InsufficientStock model whatsoever.
+    # M2 went to some trouble to prove those numbers are populated and correct
+    # (InsufficientStockHttpTest), which is wasted if the client cannot read
+    # them.
+    #
+    # allOf Problem so the RFC 9457 fields are inherited rather than restated —
+    # one definition of `status`, `title` and `detail`.
+    InsufficientStockProblem:
+      description: |
+        A 409 from any endpoint that moves stock. Carries the numbers a cashier
+        needs to act on: which product, how much was asked for, how much there
+        actually is.
+      allOf:
+        - $ref: '#/components/schemas/Problem'
+        - type: object
+          properties:
+            productId: { type: string, format: uuid }
+            requested:
+              type: number
+              description: Absolute quantity requested, not the signed delta
+            available:
+              type: number
+              description: Quantity on hand at the time of the refusal
 
     Problem:
       type: object
