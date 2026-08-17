@@ -2,6 +2,27 @@
 # those live in the profile files, where local defaults can be local-only and
 # prod can insist on real environment variables.
 
+# Every endpoint is served under /api/v1, which is what docs/openapi.yaml has
+# always said:
+#
+#   servers:
+#     - url: https://api.example.com/api/v1
+#
+# The implementation drifted from that and served everything at the root. M3
+# found it the way client/server drift is usually found — the Android client,
+# built from the contract, pointed at /api/v1 and would have 404ed on every call.
+#
+# The prefix stays rather than the contract changing, because a version in the
+# path is what lets a v2 run alongside v1 later, and 40 paths already assume it.
+# Dropping it would mean either abandoning versioning or rewriting every server
+# URL in the contract.
+#
+# ApiContractTest cannot catch this class of drift: it validates the document,
+# not the routes the application actually serves. ContextPathTest does that.
+server:
+  servlet:
+    context-path: /api/v1
+
 spring:
   application:
     name: inventory-backend
@@ -35,6 +56,17 @@ spring:
 management:
   endpoints:
     web:
+      # Set explicitly rather than left to the default, because the default is
+      # relative to the context path — so actuator moved to /api/v1/actuator the
+      # moment the prefix above was added. Naming it here makes the location a
+      # decision on record instead of a side effect, and anyone wiring a probe
+      # can read it off this file.
+      #
+      # It stays under the prefix rather than being pulled back to the root,
+      # which would need a separate management port. Nothing currently depends
+      # on actuator being at the root: docker-compose has only a db service and
+      # its healthcheck is pg_isready against Postgres, not an HTTP probe.
+      base-path: /actuator
       exposure:
         include: health,info
   endpoint:

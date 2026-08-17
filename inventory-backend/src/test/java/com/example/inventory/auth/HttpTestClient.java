@@ -38,8 +38,20 @@ public final class HttpTestClient {
             .build();
     private final String baseUrl;
 
+    /**
+     * The versioned base path is applied here, once, so every test can keep
+     * writing logical paths like "/auth/login".
+     *
+     * <p>It must match {@code server.servlet.context-path}, which matches the
+     * {@code servers} URL in docs/openapi.yaml. Deliberately NOT read from the
+     * application's own configuration: a test that asks the app where it serves
+     * and then checks it serves there proves nothing. {@code ContextPathTest}
+     * makes raw requests against literal paths for the same reason.
+     */
+    public static final String BASE_PATH = "/api/v1";
+
     public HttpTestClient(int port) {
-        this.baseUrl = "http://localhost:" + port;
+        this.baseUrl = "http://localhost:" + port + BASE_PATH;
     }
 
     public record Response(int status, String body, HttpHeadersView headers) {

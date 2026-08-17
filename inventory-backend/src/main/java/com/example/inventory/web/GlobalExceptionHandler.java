@@ -13,6 +13,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -187,6 +188,27 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     ResponseEntity<ProblemDetail> unexpected(Exception e) {
+        // Spring MVC's own exceptions — wrong method, unsupported media type,
+        // unreadable body, missing parameter — already carry the right status.
+        // Without this branch they fall through to a 500, which is not cosmetic:
+        // a client sending a GET to a POST-only route, or JSON the parser cannot
+        // read, would be told the SERVER broke rather than that the request was
+        // wrong, and would retry forever against something that can never work.
+        //
+        // Found by ContextPathTest, which expected 405 from a GET on
+        // /auth/login and got 500 — three milestones after this catch-all was
+        // written, because nothing had previously made a deliberately malformed
+        // request.
+        //
+        // Checked with instanceof rather than a second @ExceptionHandler because
+        // ErrorResponse is an interface, not a Throwable, so it cannot be named
+        // as a handler type.
+        if (e instanceof ErrorResponse errorResponse) {
+            HttpStatus status = HttpStatus.valueOf(errorResponse.getStatusCode().value());
+            return problem(status, status.getReasonPhrase(),
+                    "The request could not be handled as sent", "bad-request");
+        }
+
         log.error("Unhandled exception", e);
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Internal server error",
                 "The request could not be processed", "internal-error");

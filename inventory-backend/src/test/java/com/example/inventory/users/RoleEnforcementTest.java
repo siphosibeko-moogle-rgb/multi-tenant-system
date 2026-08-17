@@ -292,7 +292,7 @@ class RoleEnforcementTest extends AbstractIntegrationTest {
     private int send(String method, String path, String body, String token) {
         try {
             var request = java.net.http.HttpRequest.newBuilder(
-                            java.net.URI.create("http://localhost:" + port + path))
+                            java.net.URI.create("http://localhost:" + port + HttpTestClient.BASE_PATH + path))
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer " + token)
                     .method(method, body == null

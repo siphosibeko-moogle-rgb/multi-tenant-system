@@ -84,7 +84,7 @@ class StaleIfMatchHttpTest extends AbstractIntegrationTest {
     private HttpResponse<String> patch(String path, String body, String ifMatch) {
         try {
             HttpRequest.Builder request = HttpRequest.newBuilder(
-                            URI.create("http://localhost:" + port + path))
+                            URI.create("http://localhost:" + port + HttpTestClient.BASE_PATH + path))
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer " + token())
                     .method("PATCH", HttpRequest.BodyPublishers.ofString(body));
