@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.inventory.mobile.auth.SessionManager
 import com.example.inventory.mobile.ui.LoginScreen
+import com.example.inventory.mobile.ui.ProductListScreen
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -48,40 +49,13 @@ class MainActivity : ComponentActivity() {
                     val state by session.state.collectAsStateWithLifecycle()
                     when (state) {
                         is SessionManager.State.LoggedOut -> LoginScreen()
-                        is SessionManager.State.LoggedIn -> SignedInPlaceholder(
-                            state = state as SessionManager.State.LoggedIn,
+                        is SessionManager.State.LoggedIn -> ProductListScreen(
+                            tenantName = (state as SessionManager.State.LoggedIn).tenantName,
                             onSignOut = { session.signOut() },
                         )
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun SignedInPlaceholder(
-    state: SessionManager.State.LoggedIn,
-    onSignOut: () -> Unit,
-) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("Signed in", style = MaterialTheme.typography.headlineMedium)
-        if (state.displayName.isNotBlank()) {
-            Text(state.displayName, style = MaterialTheme.typography.bodyLarge)
-        }
-        if (state.tenantName.isNotBlank()) {
-            Text(state.tenantName, style = MaterialTheme.typography.bodyMedium)
-        }
-        Text(
-            "Product list arrives in step 3.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Button(onClick = onSignOut, modifier = Modifier.padding(top = 24.dp)) {
-            Text("Sign out")
         }
     }
 }

@@ -94,11 +94,21 @@ fun <T> Response<T>.toApiError(moshi: Moshi = ProblemParsing.moshi): ApiError {
  */
 object ProblemParsing {
 
-    val moshi: Moshi by lazy {
-        Moshi.Builder()
-            .add(com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory())
-            .build()
-    }
+    /**
+     * The GENERATED client's Moshi, not a fresh one.
+     *
+     * Problem carries `type` as a URI, InsufficientStockProblem carries
+     * `productId` as a UUID and `requested`/`available` as BigDecimal. A plain
+     * Moshi has adapters for none of those, so parsing throws, the catch below
+     * returns null, and every problem body silently degrades to the generic
+     * message for its status code.
+     *
+     * That failure is invisible in the obvious places: the app still shows *an*
+     * error, just the wrong one — an oversell would read "That conflicts with
+     * something already saved" instead of naming the quantities. Caught by
+     * ApiErrorTest, which asserts the numbers appear.
+     */
+    val moshi: Moshi by lazy { com.example.inventory.api.infrastructure.Serializer.moshi }
 
     fun parse(body: String, moshi: Moshi = this.moshi): Problem? = try {
         if (body.isBlank()) null else moshi.adapter(Problem::class.java).fromJson(body)
