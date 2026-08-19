@@ -115,6 +115,119 @@ class ApiErrorTest {
         assertEquals("A business with that slug already exists", error.message)
     }
 
+    /**
+     * The oversell body CAPTURED FROM THE RUNNING SERVER, byte for byte.
+     *
+     * Not a fixture anyone chose the contents of. The previous oversell test
+     * used a mock returning "available": 3, which meant it could not tell
+     * "parsed the numbers" from "fell back to a status-keyed message that
+     * happens to read sensibly" — the same shape as the earlier bug where the
+     * mock was told what to return and the real server was never asked.
+     *
+     * These two bodies come from OversellBodyProbeTest against a real Postgres:
+     * a product that was never stocked, and one stocked and then emptied. They
+     * differ in a way no hand-written fixture would have thought to: PostgreSQL
+     * renders numeric(14,3) as `0.000`, not `0`.
+     */
+    @Test
+    fun `an oversell of a never-stocked product names both numbers`() {
+        val captured = """{"detail":"The requested quantity is not available",""" +
+            """"instance":"/api/v1/sales","status":409,"title":"Insufficient stock",""" +
+            """"type":"https://api.example.com/problems/insufficient-stock",""" +
+            """"productId":"5909185a-260f-4ba9-911a-78a8d0b69647",""" +
+            """"requested":6,"available":0}"""
+
+        val error = errorResponse(409, captured).toApiError()
+
+        assertEquals("Not enough stock to complete this sale.", error.message)
+        assertNotNull("the oversell branch must produce a detail line", error.detail)
+        assertTrue(
+            "must name what was asked for — was <${error.detail}>",
+            error.detail!!.contains("6"),
+        )
+        assertTrue(
+            "must name what is actually available, including when that is zero — " +
+                "was <${error.detail}>",
+            error.detail.contains("0"),
+        )
+    }
+
+    @Test
+    fun `zero available survives PostgreSQL's numeric formatting`() {
+        // available is 0.000 here rather than 0: the column is numeric(14,3) and
+        // a product with an existing product_stock row reports its scale. A
+        // client that stringifies without normalising would show "only 0.000
+        // are available" to a shop owner.
+        val captured = """{"detail":"The requested quantity is not available",""" +
+            """"instance":"/api/v1/sales","status":409,"title":"Insufficient stock",""" +
+            """"type":"https://api.example.com/problems/insufficient-stock",""" +
+            """"productId":"660f1fda-65a1-4712-8d62-2fd32fb836b3",""" +
+            """"requested":6,"available":0.000}"""
+
+        val error = errorResponse(409, captured).toApiError()
+
+        assertEquals("Not enough stock to complete this sale.", error.message)
+        assertNotNull(error.detail)
+        assertTrue(
+            "0.000 must be shown as 0 — was <${error.detail}>",
+            error.detail!!.contains("0") && !error.detail.contains("0.000"),
+        )
+    }
+
+    /**
+     * The exact degradation the emulator hit, now with an assertion on it.
+     *
+     * A backend running code from before the withAvailableFilledIn fix sent
+     * `available: null`. Because the contract marks all three numbers required,
+     * the generated model could not be constructed at all — so the client threw
+     * away `requested`, which had arrived perfectly, and fell through to
+     * echoing the server's own `detail`. The device showed "The requested
+     * quantity is not available": true, useless, and precisely what the cashier
+     * already knew.
+     *
+     * The response is malformed and should not happen. That is not a reason to
+     * show nothing: losing a number we were handed is a worse failure than the
+     * malformed field that caused it.
+     */
+    @Test
+    fun `a malformed oversell still shows the number it did receive`() {
+        val body = """{"detail":"The requested quantity is not available",""" +
+            """"instance":"/api/v1/sales","status":409,"title":"Insufficient stock",""" +
+            """"type":"https://api.example.com/problems/insufficient-stock",""" +
+            """"productId":"5909185a-260f-4ba9-911a-78a8d0b69647",""" +
+            """"requested":6,"available":null}"""
+
+        val error = errorResponse(409, body).toApiError()
+
+        assertEquals("Not enough stock to complete this sale.", error.message)
+        assertNotNull("a salvageable oversell must not fall back to the server's detail", error.detail)
+        assertTrue(
+            "the requested quantity arrived intact and must be shown — was <${error.detail}>",
+            error.detail!!.contains("6"),
+        )
+        // The regression guard: this string is what the device showed, and it
+        // must never be the whole of what a cashier sees for an oversell again.
+        assertTrue(
+            "must not degrade to echoing the server's detail — was <${error.message}>",
+            !error.message.contains("The requested quantity is not available"),
+        )
+    }
+
+    @Test
+    fun `a 409 that is not an oversell is not salvaged into one`() {
+        // The salvage path keys on the problem TYPE, not on the status. A slug
+        // collision would be worse than the bug it fixes: telling a shop owner
+        // they are out of stock when the real problem is a duplicate SKU sends
+        // them to count a shelf for no reason.
+        val body = """{"type":"https://api.example.com/problems/product-sku-taken",""" +
+            """"title":"Conflict","status":409,"requested":6,""" +
+            """"detail":"Another product already uses that SKU"}"""
+
+        val error = errorResponse(409, body).toApiError()
+
+        assertEquals("Another product already uses that SKU", error.message)
+    }
+
     @Test
     fun `a malformed or empty body still produces a message rather than throwing`() {
         // An error path that throws while reporting an error is the worst

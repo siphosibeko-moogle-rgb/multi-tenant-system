@@ -289,16 +289,26 @@ class RecordSaleViewModelTest {
         server.enqueue(
             MockResponse().setResponseCode(409)
                 .setHeader("Content-Type", "application/problem+json")
+                // Captured from the running server (OversellBodyProbeTest), with
+                // only the productId swapped for this fixture's. The previous
+                // version of this body was invented, and an invented oversell
+                // body cannot distinguish "parsed the numbers" from "fell back
+                // to a message that happens to read sensibly" — it asserts
+                // whatever it was told to return. Note `available` is 0 and
+                // `requested` is 6: a zero-stock refusal is the DEFAULT case for
+                // a new catalogue, and the earlier fixture's non-zero 3 quietly
+                // avoided it.
                 .setBody(
-                    """{"type":"https://api.example.com/problems/insufficient-stock",
-                        "title":"Insufficient stock","status":409,
-                        "detail":"The requested quantity is not available",
-                        "productId":"${product.id}","requested":5,"available":3}"""
+                    """{"detail":"The requested quantity is not available",
+                        "instance":"/api/v1/sales","status":409,
+                        "title":"Insufficient stock",
+                        "type":"https://api.example.com/problems/insufficient-stock",
+                        "productId":"${product.id}","requested":6,"available":0}"""
                 )
         )
 
         viewModel.startSale(product)
-        viewModel.setQuantity("5")
+        viewModel.setQuantity("6")
         viewModel.save()
         awaitSettled()
 
@@ -307,11 +317,17 @@ class RecordSaleViewModelTest {
         assertEquals("Not enough stock to complete this sale.", error!!.message)
         assertTrue(
             "the shortfall must name what was asked for: was <${error.detail}>",
-            error.detail!!.contains("5"),
+            error.detail!!.contains("6"),
         )
         assertTrue(
-            "and what is actually there: was <${error.detail}>",
-            error.detail.contains("3"),
+            "and what is actually there, including when that is zero: was <${error.detail}>",
+            error.detail.contains("0"),
+        )
+        // The failure the emulator actually showed: the server's own detail
+        // echoed back, naming no numbers at all.
+        assertTrue(
+            "must not fall back to the server's detail: was <${error.message}>",
+            !error.message.contains("The requested quantity is not available"),
         )
         assertNotNull(
             "a refused sale keeps its key: the cashier may fix the quantity and retry, and " +

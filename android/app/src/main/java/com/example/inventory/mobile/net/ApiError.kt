@@ -69,10 +69,36 @@ fun <T> Response<T>.toApiError(moshi: Moshi = ProblemParsing.moshi): ApiError {
     if (code() == 409 && insufficient != null) {
         return ApiError(
             message = "Not enough stock to complete this sale.",
-            detail = "Asked for ${insufficient.requested.stripTrailingZeros().toPlainString()}, " +
-                "but only ${insufficient.available.stripTrailingZeros().toPlainString()} " +
-                "in stock.",
+            detail = shortfall(
+                requested = insufficient.requested.stripTrailingZeros().toPlainString(),
+                available = insufficient.available.stripTrailingZeros().toPlainString(),
+            ),
         )
+    }
+
+    // The typed parse failed but this may still be an oversell.
+    //
+    // It is a malformed response by the contract's lights — the three numbers
+    // are required — so it should not happen. It DID happen, and the way it
+    // failed is the reason this branch exists: a backend that sent
+    // `available: null` made the whole model unconstructable, so the client
+    // threw away `requested` as well, which it had received perfectly, and fell
+    // through to echoing the server's own `detail`. The cashier was shown "The
+    // requested quantity is not available" — true, useless, and exactly the
+    // information they already had.
+    //
+    // Refusing to render a partial answer is the wrong instinct on an error
+    // path. Showing what we do know beats showing nothing, and losing a number
+    // we were handed is a worse failure than the malformed field that caused
+    // it. Salvaging is per-field and deliberately lenient.
+    if (code() == 409 && ProblemParsing.isInsufficientStock(problem)) {
+        val salvaged = ProblemParsing.salvageNumbers(raw, moshi)
+        if (salvaged.requested != null || salvaged.available != null) {
+            return ApiError(
+                message = "Not enough stock to complete this sale.",
+                detail = shortfall(salvaged.requested, salvaged.available),
+            )
+        }
     }
 
     val serverDetail = problem?.detail?.takeIf { it.isNotBlank() }
@@ -91,6 +117,22 @@ fun <T> Response<T>.toApiError(moshi: Moshi = ProblemParsing.moshi): ApiError {
         in 500..599 -> ApiError("The server had a problem. Try again in a moment.")
         else -> ApiError(serverDetail ?: "Something went wrong. Try again.")
     }
+}
+
+/**
+ * The second line of an oversell, from whichever numbers survived parsing.
+ *
+ * One template for the complete and the salvaged case so the two cannot drift
+ * into saying different things about the same refusal.
+ */
+private fun shortfall(requested: String?, available: String?): String = when {
+    requested != null && available != null ->
+        "You asked for $requested but only $available are available."
+    requested != null -> "You asked for $requested, which is more than is in stock."
+    available != null -> "Only $available are available."
+    // Not reachable from the call sites, which both check first. Present so the
+    // function is total rather than relying on that remaining true.
+    else -> "There is not enough stock."
 }
 
 /**
@@ -120,6 +162,39 @@ object ProblemParsing {
         if (body.isBlank()) null else moshi.adapter(Problem::class.java).fromJson(body)
     } catch (e: Exception) {
         null
+    }
+
+    /** Whether a parsed problem claims to be an oversell, by its stable type slug. */
+    fun isInsufficientStock(problem: Problem?): Boolean =
+        problem?.type?.toString()?.endsWith("/insufficient-stock") == true
+
+    /** Whichever oversell numbers could be read, independently of each other. */
+    data class SalvagedNumbers(val requested: String?, val available: String?)
+
+    /**
+     * Reads `requested` and `available` out of a body the typed model rejected.
+     *
+     * Deliberately untyped and per-field: the point is to survive whatever made
+     * the strict parse fail, so one unusable field cannot cost the other. Parsed
+     * as a generic map rather than with a hand-rolled regex, because a regex
+     * over JSON would find the right answer for the wrong reasons and keep
+     * finding it after the shape changed.
+     */
+    fun salvageNumbers(body: String, moshi: Moshi = this.moshi): SalvagedNumbers = try {
+        @Suppress("UNCHECKED_CAST")
+        val map = moshi.adapter(Map::class.java).fromJson(body) as? Map<String, Any?>
+        SalvagedNumbers(number(map?.get("requested")), number(map?.get("available")))
+    } catch (e: Exception) {
+        SalvagedNumbers(null, null)
+    }
+
+    /** Renders a JSON number as a person would write it: 0.000 becomes 0. */
+    private fun number(value: Any?): String? = when (value) {
+        null -> null
+        is java.math.BigDecimal -> value.stripTrailingZeros().toPlainString()
+        is Number -> java.math.BigDecimal(value.toString()).stripTrailingZeros().toPlainString()
+        is String -> value.toBigDecimalOrNull()?.stripTrailingZeros()?.toPlainString()
+        else -> null
     }
 
     fun parseInsufficientStock(body: String, moshi: Moshi = this.moshi): InsufficientStockProblem? =
