@@ -95,12 +95,30 @@ that out now costs a day rather than a fortnight.
 - Login screen → product list → record a sale
 - `TokenAuthenticator`: 401 → refresh → retry once
 
-**Done when**
-- A real phone or emulator logs in, lists products, records a sale, and the
+**Done when** — verified on the emulator unless marked otherwise
+
+- [x] A real phone or emulator logs in, lists products, records a sale, and the
 backend's stock reflects it
-- An expired access token refreshes transparently with no visible interruption
-- Two accounts in different tenants show completely different catalogs
-- Killing the backend produces a readable error in the app, not a crash
+- [x] Killing the backend produces a readable error in the app, not a crash —
+checked as part of the retry round: stopped mid-sale, readable error, then
+Retry after restart recorded the sale exactly once
+- [x] An oversell shows the real requested and available numbers, including
+when available is zero
+- [ ] **An expired access token refreshes transparently.** Not observed on a
+device. `TokenAuthenticatorTest` covers the single-flight refresh and the
+reuse check, and neither is a device. To check: shorten the access-token TTL
+in `application-local.yml`, sign in, wait past it, then reload the list — it
+should refresh with no sign-in prompt and no visible pause.
+- [ ] **Two accounts in different tenants show completely different catalogs.**
+Not observed on a device. `TenantIsolationTest` proves it at the database
+level across 21 tables, which is the stronger guarantee, but it is not the
+same statement: it says the rows are invisible, not that the app signs the
+second account in cleanly and shows it nothing of the first. To check:
+register a second tenant, seed it two products, and sign in as each in turn.
+
+The two unchecked items are listed as unchecked deliberately. Both have code
+and tests behind them and would very probably pass; "would probably pass" is
+exactly what this milestone exists to stop anyone saying.
 
 **Contract gaps M3 found and did NOT close**
 
