@@ -1,5 +1,6 @@
 package com.example.inventory.mobile.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -164,8 +165,26 @@ fun ProductListScreen(
     tenantName: String,
     onSignOut: () -> Unit,
     viewModel: ProductListViewModel = hiltViewModel(),
+    saleViewModel: RecordSaleViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val saleState by saleViewModel.state.collectAsStateWithLifecycle()
+
+    // A recorded sale changes the stock this screen is displaying, so the list
+    // is reloaded when the sheet closes after a success. Without this the row
+    // still shows the pre-sale quantity and the next sale is decided from a
+    // number that is already wrong.
+    RecordSaleDialog(
+        state = saleState,
+        onQuantityChange = saleViewModel::setQuantity,
+        onSave = saleViewModel::save,
+        onRetry = saleViewModel::retry,
+        onDismiss = {
+            val recorded = saleState.recordedSaleNumber != null
+            saleViewModel.dismiss()
+            if (recorded) viewModel.retry()
+        },
+    )
     val listState = rememberLazyListState()
 
     // Fetch the next page when the last row comes into view. Watching the list
@@ -214,7 +233,7 @@ fun ProductListScreen(
 
             else -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 items(state.products, key = { it.id.toString() }) { product ->
-                    ProductRow(product)
+                    ProductRow(product, onClick = { saleViewModel.startSale(product) })
                     HorizontalDivider()
                 }
 
@@ -242,9 +261,12 @@ fun ProductListScreen(
 }
 
 @Composable
-private fun ProductRow(product: Product) {
+private fun ProductRow(product: Product, onClick: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column(modifier = Modifier.weight(1f)) {
