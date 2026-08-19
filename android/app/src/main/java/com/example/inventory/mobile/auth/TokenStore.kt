@@ -76,8 +76,25 @@ class EncryptedTokenStore(context: Context) : TokenStore {
             .commit()
     }
 
+    /**
+     * apply(), not commit() — the opposite choice from [save], on purpose.
+     *
+     * [save] uses commit() because losing a token that was just issued strands
+     * the user. Clearing has no such risk: the worst case is a token that
+     * outlives the sign-out by milliseconds and is refused on next use.
+     *
+     * What commit() *did* cost was the main thread. It performs the keystore
+     * work and the disk write synchronously, and sign-out is called straight
+     * from a Compose click handler — so the button held the UI thread through a
+     * crypto operation. A slow or contended keystore makes that look exactly
+     * like a button that does nothing, which is how it was reported.
+     *
+     * apply() updates the in-memory map immediately, so a read on any thread
+     * right after this returns already sees the tokens gone; only the flush to
+     * disk is deferred. That is the ordering that matters here.
+     */
     override fun clear() {
-        prefs.edit().clear().commit()
+        prefs.edit().clear().apply()
     }
 
     private companion object {

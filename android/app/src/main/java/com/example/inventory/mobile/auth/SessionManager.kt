@@ -80,10 +80,41 @@ class SessionManager @Inject constructor(
         }
     }
 
-    /** Called by [TokenAuthenticator] when a refresh fails, and on sign-out. */
+    /**
+     * Called by [TokenAuthenticator] when a refresh fails, and on sign-out.
+     *
+     * **The state is written first, and the token wipe cannot prevent it.**
+     *
+     * The order used to be the other way round, which made leaving the session
+     * conditional on the wipe succeeding. It does not always: this store is
+     * backed by EncryptedSharedPreferences, whose editor throws
+     * `SecurityException` when the keystore will not co-operate. One such throw
+     * and the state assignment below never ran — the user tapped Sign out, the
+     * app stayed on the product list, and clearing app data was the only way
+     * back to the login screen.
+     *
+     * A keystore that will not clear is a bad situation. Refusing to sign the
+     * user out of the UI makes it strictly worse, because now they cannot even
+     * walk away from the session. Whatever happens to the bytes on disk, the
+     * app must agree that the user has left.
+     */
     override fun onSessionExpired() {
-        tokens.clear()
         _state.value = State.LoggedOut
+
+        try {
+            tokens.clear()
+        } catch (e: Exception) {
+            // Deliberately swallowed. There is no useful recovery and nothing to
+            // tell the user: they asked to sign out and, as far as the app is
+            // concerned, they have. The tokens that survive are already expired
+            // or about to be, and the next request to use one gets a 401 that
+            // lands right back here.
+            //
+            // Not logged, either. This class holds tokens and CLAUDE.md's M3
+            // brief is explicit that they never reach a log or a crash report;
+            // an exception from a token store is exactly the kind of object
+            // that carries one in its message.
+        }
     }
 
     fun signOut() {
