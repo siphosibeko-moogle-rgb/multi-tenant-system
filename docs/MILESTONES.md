@@ -102,6 +102,29 @@ backend's stock reflects it
 - Two accounts in different tenants show completely different catalogs
 - Killing the backend produces a readable error in the app, not a crash
 
+**Contract gaps M3 found and did NOT close**
+
+Tightening the response schemas with `required` (CLAUDE.md §15) turned the
+contract into something checkable, and `ResponseRequiredFieldsHttpTest` then
+checked it against the running server. Two gaps were fixed in M3 — `POST /sales`
+returning a null `available`, and a 401 with no body at all. One is left open on
+purpose, because it is a feature rather than a defect:
+
+- **`GET /products/{id}` is declared `ProductDetail` and returns `Product`.**
+The missing field is `stockByLocation`, the per-location breakdown, which is
+not implemented anywhere. Every other `ProductDetail` field is present.
+
+Deliberately not fixed by loosening the contract: doing so would delete the
+only written record that the per-location view was ever promised. It belongs
+with the multi-location work — **M5**, alongside receiving stock into a
+specific location, where the per-location view is the point rather than a
+detail page ornament.
+
+`ResponseRequiredFieldsHttpTest.productDetailIsNotYetImplemented` pins the
+current behaviour and is worded to go **red** when the field appears, telling
+whoever implements it to promote the endpoint to the ordinary check. The gap
+cannot go quiet.
+
 ---
 
 ## M4 — Sales and returns

@@ -416,37 +416,76 @@ class ResponseRequiredFieldsHttpTest extends AbstractIntegrationTest {
      * failure.
      */
     @Test
-    @DisplayName("a 401 sends NO body at all — contract says Problem")
-    void unauthorizedSendsNoBody() {
+    @DisplayName("a 401 satisfies Problem, body and content type")
+    void unauthorizedSatisfiesProblem() {
         var response = http().get("/products", null);
         assertThat(response.status()).isEqualTo(401);
 
-        // Pinned, unfixed, and reported. The contract's `Unauthorized` response
-        // declares a Problem body; Spring Security's entry point writes none,
-        // because nothing in this application configures one and the default
-        // sends only a status line and a WWW-Authenticate header.
-        //
-        // Why it matters more than it looks: this is the single most-travelled
-        // error path in the mobile client. Every expired access token arrives
-        // here, and TokenAuthenticator meets it on a hot path. It survives today
-        // only because the authenticator keys on the STATUS and never reads the
-        // body — so the omission costs nothing until the refresh itself fails,
-        // at which point the user gets a generic message where the server had
-        // something specific to say.
-        //
-        // Left as a gap rather than papered over: fixing it means writing an
-        // AuthenticationEntryPoint that emits RFC 9457, and choosing the `type`
-        // and `title` it carries is a contract decision, not a typo fix.
-        // Loosening Problem instead would be the wrong direction — the other
-        // sixteen error paths in this test do send complete bodies, and it is
-        // this one endpoint that is wrong.
-        //
-        // Fixing the backend turns this test red on purpose. Whoever does it
-        // should delete this and assert satisfies(body, "Problem") instead.
         assertThat(response.body())
-                .as("a 401 now has a body — replace this pin with the ordinary "
-                        + "satisfies(body, \"Problem\") check")
-                .isBlank();
+                .as("a 401 with an empty body cannot be reported to a user at all")
+                .isNotBlank();
+        satisfies(response.json(), "Problem");
+
+        assertThat(response.headers().first("Content-Type"))
+                .as("RFC 9457 bodies are application/problem+json, not application/json")
+                .startsWith("application/problem+json");
+
+        // Wrapping rather than replacing the bearer entry point is the whole
+        // reason this still holds. Replacing it outright would have traded the
+        // missing body for a missing header and looked like a fix.
+        assertThat(response.headers().first("WWW-Authenticate"))
+                .as("the bearer challenge must survive the added body")
+                .isNotNull();
+
+        // The detail must not say WHY. Absent, expired, malformed and
+        // wrong-signature all produce this same sentence on purpose: telling a
+        // caller their stolen token merely expired is an oracle.
+        assertThat(response.json().get("type").asString())
+                .isEqualTo("https://api.example.com/problems/unauthenticated");
+        assertThat(response.json().get("title").asString()).isEqualTo("Authentication required");
+        assertThat(response.json().get("instance").asString()).isEqualTo("/api/v1/products");
+    }
+
+    @Test
+    @DisplayName("an expired token and an absent one are indistinguishable")
+    void unauthorizedIsNotAnOracle() {
+        var absent = http().get("/products", null);
+        var garbage = http().get("/products", "not-a-jwt-at-all");
+        var forged = http().get("/products", jwtService
+                .issueAccessToken(tenantId, userId, "owner").value() + "tampered");
+
+        assertThat(absent.status()).isEqualTo(401);
+        assertThat(garbage.status()).isEqualTo(401);
+        assertThat(forged.status()).isEqualTo(401);
+
+        // Same type, same title, same detail. Only `instance` may differ, and
+        // here it does not. If a future change makes one of these more helpful,
+        // this test is the thing that objects.
+        assertThat(garbage.json().get("detail").asString())
+                .isEqualTo(absent.json().get("detail").asString());
+        assertThat(forged.json().get("detail").asString())
+                .isEqualTo(absent.json().get("detail").asString());
+        assertThat(forged.json().get("type").asString())
+                .isEqualTo(absent.json().get("type").asString());
+    }
+
+    @Test
+    @DisplayName("a 403 satisfies Problem")
+    void forbiddenSatisfiesProblem() {
+        // A viewer asked to write. This particular refusal comes from
+        // @PreAuthorize inside the dispatch, so GlobalExceptionHandler renders
+        // it and it already had a body — checked here anyway, because the
+        // contract makes the same promise for 403 as for 401 and "it happens to
+        // work today" is not the same as "it is asserted".
+        String viewer = jwtService.issueAccessToken(tenantId, UUID.randomUUID(), "viewer").value();
+
+        var response = http().postWithToken("/users", """
+                {"email":"new-%s@example.test","fullName":"Nia New","role":"clerk"}
+                """.formatted(UUID.randomUUID().toString().substring(0, 8)), viewer);
+
+        assertThat(response.status()).isEqualTo(403);
+        assertThat(response.body()).isNotBlank();
+        satisfies(response.json(), "Problem");
     }
 
     @Test

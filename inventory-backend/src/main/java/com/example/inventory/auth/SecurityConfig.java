@@ -9,6 +9,9 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import com.example.inventory.web.SecurityProblems;
+import org.springframework.security.oauth2.server.resource.web.BearerTokenAuthenticationEntryPoint;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
@@ -79,9 +82,33 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/**")
                         .permitAll()
                         .anyRequest().authenticated())
-                .oauth2ResourceServer(oauth2 -> oauth2.jwt(jwt ->
-                        jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));
+                .oauth2ResourceServer(oauth2 -> oauth2
+                        .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter()))
+                        // The resource server keeps its OWN entry point,
+                        // separate from the one below: a rejection raised by the
+                        // bearer-token filter is commenced here, not by
+                        // exceptionHandling. Setting only one of the two leaves
+                        // the other emitting a bare status line, which is
+                        // exactly the gap this is fixing.
+                        .authenticationEntryPoint(problemEntryPoint())
+                        .accessDeniedHandler(new SecurityProblems.Denied()))
+                .exceptionHandling(handling -> handling
+                        .authenticationEntryPoint(problemEntryPoint())
+                        .accessDeniedHandler(new SecurityProblems.Denied()));
         return http.build();
+    }
+
+    /**
+     * A 401 that carries an RFC 9457 body, as the contract has always promised.
+     *
+     * <p>Wraps rather than replaces {@code BearerTokenAuthenticationEntryPoint}
+     * so the {@code WWW-Authenticate} header survives — see
+     * {@link SecurityProblems}. A fresh instance per call is deliberate and
+     * cheap: these are stateless, and sharing one across two registration points
+     * would suggest a lifecycle that does not exist.
+     */
+    private static AuthenticationEntryPoint problemEntryPoint() {
+        return new SecurityProblems.EntryPoint(new BearerTokenAuthenticationEntryPoint());
     }
 
     /**
