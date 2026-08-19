@@ -71,8 +71,8 @@ class SessionManager @Inject constructor(
 
             tokens.save(access, refresh)
             _state.value = State.LoggedIn(
-                displayName = body.user?.fullName.orEmpty(),
-                tenantName = body.user?.tenant?.name.orEmpty(),
+                displayName = body.user.fullName,
+                tenantName = body.user.tenant.name,
             )
             null
         } catch (e: Exception) {

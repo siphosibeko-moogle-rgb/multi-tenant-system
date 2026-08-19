@@ -4,6 +4,7 @@ import com.example.inventory.api.apis.SalesApi
 import com.example.inventory.api.infrastructure.Serializer
 import com.example.inventory.api.models.Product
 import java.math.BigDecimal
+import java.time.OffsetDateTime
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -39,11 +40,22 @@ class RecordSaleViewModelTest {
     private lateinit var server: MockWebServer
     private lateinit var viewModel: RecordSaleViewModel
 
+    // Every field is now required by the contract, so the fixture has to state
+    // them. That is the tightening working: a Product that could be built from
+    // three fields was a Product the server was never allowed to send.
     private val product = Product(
         id = UUID.randomUUID(),
         sku = "SKU-1",
         name = "Bread",
+        unitOfMeasure = "each",
+        costPrice = BigDecimal("7.25"),
+        sellingPrice = BigDecimal("12.50"),
+        taxRate = BigDecimal("0.15"),
         quantityOnHand = BigDecimal("3"),
+        quantityAvailable = BigDecimal("3"),
+        stockState = Product.StockState.OK,
+        isActive = true,
+        updatedAt = OffsetDateTime.parse("2026-08-18T09:00:00+02:00"),
     )
 
     @Before
@@ -96,10 +108,23 @@ class RecordSaleViewModelTest {
         throw AssertionError("request did not settle within ${timeoutMillis}ms")
     }
 
+    /**
+     * A complete SaleDetail.
+     *
+     * The earlier version of this fixture stopped at soldAt, omitting
+     * locationId, createdBy and lines. Once the contract marked those required
+     * the generated model stopped accepting it — which is the point: the server
+     * always sends them, so a fixture without them was testing against a
+     * response the API cannot produce, and any bug in reading those fields would
+     * have been invisible here.
+     */
     private fun saleResponse(number: String) = MockResponse().setResponseCode(201).setBody(
         """{"id":"${UUID.randomUUID()}","saleNumber":"$number","status":"completed",
             "itemCount":1,"subtotalAmount":10.00,"discountAmount":0,"taxAmount":1.50,
-            "totalAmount":11.50,"soldAt":"2026-08-18T10:00:00+02:00"}"""
+            "totalAmount":11.50,"soldAt":"2026-08-18T10:00:00+02:00",
+            "locationId":"${UUID.randomUUID()}","createdBy":"${UUID.randomUUID()}",
+            "lines":[{"productId":"${product.id}","sku":"SKU-1","name":"Bread",
+                      "quantity":1,"unitPrice":10.00,"discountAmount":0,"lineTotal":10.00}]}"""
     )
 
     // ------------------------------------------------------------------

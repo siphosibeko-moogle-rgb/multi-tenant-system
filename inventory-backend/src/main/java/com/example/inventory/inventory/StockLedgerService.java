@@ -150,8 +150,22 @@ public class StockLedgerService {
      * `available` was always zero no matter what was on the shelf. The HTTP test
      * caught it; the service-level tests never would have, because they only
      * asserted that the exception carried the product id.
+     *
+     * <p><strong>Public because {@link #postWithin} is public.</strong> Any
+     * caller that opens its own transaction and appends through {@code postWithin}
+     * — multi-line sales, and whatever M4 adds next — bypasses {@link #post}, and
+     * with it this fill-in. {@code SaleService} did exactly that and shipped a
+     * 409 whose {@code available} was null on every oversold sale, while
+     * {@code /inventory/adjustments} reported the number correctly. The two paths
+     * looked identical from the outside and the divergence was invisible to every
+     * test, because the only test that checked the number went through the path
+     * that worked.
+     *
+     * <p>So: <strong>if you call {@code postWithin}, wrap the transaction in
+     * this.</strong> Not optional, and not a detail — the number is the whole
+     * point of the 409.
      */
-    private <T> T withAvailableFilledIn(java.util.function.Supplier<T> work) {
+    public <T> T withAvailableFilledIn(java.util.function.Supplier<T> work) {
         try {
             return work.get();
         } catch (InsufficientStockException e) {

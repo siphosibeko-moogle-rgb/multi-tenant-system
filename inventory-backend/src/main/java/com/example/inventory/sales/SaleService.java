@@ -85,8 +85,15 @@ public class SaleService {
         }
 
         try {
-            return new Recorded(
-                    transactions.execute(status -> insertSale(tenantId, actor, request)), false);
+            // withAvailableFilledIn wraps the transaction, not the insert: the
+            // balance can only be read once the refusal has ended it. Going
+            // through postWithin rather than post means this wrapper is this
+            // class's responsibility — without it every oversold sale returns a
+            // 409 with `available` null, which is precisely the number the
+            // cashier needs.
+            return new Recorded(ledger.withAvailableFilledIn(
+                    () -> transactions.execute(status -> insertSale(tenantId, actor, request))),
+                    false);
         } catch (DuplicateKeyException e) {
             // Lost the race against a concurrent replay of the same
             // clientRequestId. The winner's sale is the answer; ours rolled back,

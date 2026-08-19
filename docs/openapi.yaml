@@ -128,6 +128,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [tenants]
                 properties:
                   tenants:
                     type: array
@@ -1075,6 +1076,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [jobId, queuedProducts]
                 properties:
                   jobId: { type: string, format: uuid }
                   queuedProducts: { type: integer }
@@ -1167,11 +1169,13 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [buckets]
                 properties:
                   buckets:
                     type: array
                     items:
                       type: object
+                      required: [periodStart, unitsSold, revenue]
                       properties:
                         periodStart: { type: string, format: date }
                         unitsSold: { type: number }
@@ -1195,6 +1199,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [totalCostValue, totalRetailValue, productCount, asOf]
                 properties:
                   totalCostValue: { type: number }
                   totalRetailValue: { type: number }
@@ -1225,6 +1230,7 @@ paths:
                 type: array
                 items:
                   type: object
+                  required: [productId, sku, name, unitsSold, revenue]
                   properties:
                     productId: { type: string, format: uuid }
                     sku: { type: string }
@@ -1257,6 +1263,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [syncToken, hasMore, products, categories, suppliers, stock, deleted]
                 properties:
                   syncToken: { type: string }
                   hasMore: { type: boolean }
@@ -1276,6 +1283,7 @@ paths:
                     type: array
                     items:
                       type: object
+                      required: [entityType, id]
                       properties:
                         entityType: { type: string }
                         id: { type: string, format: uuid }
@@ -1409,6 +1417,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/Problem'
         - type: object
+          required: [productId, requested, available]
           properties:
             productId: { type: string, format: uuid }
             requested:
@@ -1421,6 +1430,7 @@ components:
     Problem:
       type: object
       description: RFC 9457 problem detail
+      required: [type, title, status]
       properties:
         type: { type: string, format: uri, examples: ['https://api.example.com/problems/insufficient-stock'] }
         title: { type: string }
@@ -1432,12 +1442,14 @@ components:
           type: array
           items:
             type: object
+            required: [field, message]
             properties:
               field: { type: string }
               message: { type: string }
 
     Page:
       type: object
+      required: [items]
       properties:
         items:
           type: array
@@ -1463,6 +1475,7 @@ components:
 
     AuthTokens:
       type: object
+      required: [accessToken, refreshToken, expiresIn, tokenType, user]
       properties:
         accessToken: { type: string }
         refreshToken: { type: string }
@@ -1493,6 +1506,7 @@ components:
 
     TenantSummary:
       type: object
+      required: [id, slug, name]
       properties:
         id: { type: string, format: uuid }
         slug: { type: string }
@@ -1500,6 +1514,7 @@ components:
 
     CurrentUser:
       type: object
+      required: [id, email, fullName, role, tenant, currencyCode, timezone]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, format: email }
@@ -1508,10 +1523,14 @@ components:
         tenant: { $ref: '#/components/schemas/TenantSummary' }
         currencyCode: { type: string }
         timezone: { type: string }
-        defaultLocationId: { type: string, format: uuid }
+        # Null until the tenant has a default location. Registration does not
+        # create one, so this is null for every freshly registered business —
+        # which is why it is not in `required`. A client must handle its absence.
+        defaultLocationId: { type: string, format: uuid, nullable: true }
 
     User:
       type: object
+      required: [id, email, fullName, role, status]
       properties:
         id: { type: string, format: uuid }
         email: { type: string, format: email }
@@ -1530,6 +1549,7 @@ components:
 
     Category:
       type: object
+      required: [id, name, productCount]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -1538,6 +1558,7 @@ components:
 
     Location:
       type: object
+      required: [id, name, isDefault, isActive]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -1547,6 +1568,7 @@ components:
 
     Product:
       type: object
+      required: [id, sku, name, unitOfMeasure, costPrice, sellingPrice, taxRate, quantityOnHand, quantityAvailable, stockState, isActive, updatedAt]
       properties:
         id: { type: string, format: uuid }
         sku: { type: string }
@@ -1557,16 +1579,56 @@ components:
         costPrice: { type: number }
         sellingPrice: { type: number }
         taxRate: { type: number }
-        quantityOnHand: { type: number }
-        quantityAvailable: { type: number }
-        stockState: { type: string, enum: [ok, reorder, out_of_stock, unknown] }
+        # quantityOnHand, quantityAvailable and stockState are NOT columns of
+        # the product. They are summed across `product_stock`, which is a cache
+        # maintained by the `apply_stock_movement` trigger — so they are derived
+        # values that travel on the product for convenience.
+        #
+        # Two consequences a client must plan for:
+        #
+        #   * They are a total over every location. A product with 3 units at
+        #     the front counter and 0 in the back room reports 3, and no single
+        #     location has 3. Use StockStatus (GET /inventory) when the question
+        #     is per-location.
+        #   * They are correct as of the response and can be stale a moment
+        #     later, because any sale, receipt or transfer moves them. Nothing
+        #     in this schema distinguishes a fresh figure from a stale one, so a
+        #     client must not treat quantityOnHand as authority for whether a
+        #     sale will succeed. Post the sale; the ledger trigger decides, and
+        #     a refusal comes back as InsufficientStockProblem carrying the real
+        #     number.
+        #
+        # updatedAt is the PRODUCT row's timestamp, not the stock's — a sale
+        # changes the quantity without changing updatedAt.
+        quantityOnHand:
+          type: number
+          description: >-
+            Total on hand across all locations, from the product_stock cache.
+            Not authoritative for whether a sale will succeed — see the note above.
+        quantityAvailable:
+          type: number
+          description: >-
+            Total on hand less reserved, across all locations. Same provenance
+            and same staleness as quantityOnHand.
+        stockState:
+          type: string
+          enum: [ok, reorder, out_of_stock, unknown]
+          description: >-
+            Derived from the totals above against reorderPoint. `unknown` means
+            no reorder point is set, not that the quantity is unknown.
         isActive: { type: boolean }
-        updatedAt: { type: string, format: date-time }
+        updatedAt:
+          type: string
+          format: date-time
+          description: >-
+            When the PRODUCT row last changed. Stock movements do not touch it,
+            so this is not a freshness signal for quantityOnHand.
 
     ProductDetail:
       allOf:
         - $ref: '#/components/schemas/Product'
         - type: object
+          required: [allowNegativeStock, stockByLocation]
           properties:
             description: { type: string, nullable: true }
             reorderPoint: { type: number, nullable: true }
@@ -1613,6 +1675,7 @@ components:
 
     Supplier:
       type: object
+      required: [id, name, leadTimeDays, isActive]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
@@ -1627,12 +1690,14 @@ components:
       allOf:
         - $ref: '#/components/schemas/Supplier'
         - type: object
+          required: [observedLeadTime, productCount]
           properties:
             address: { type: string, nullable: true }
             notes: { type: string, nullable: true }
             observedLeadTime:
               type: object
               description: Measured from actual receipts, not the promised figure
+              required: [sampleSize]
               properties:
                 averageDays: { type: number, nullable: true }
                 stddevDays: { type: number, nullable: true }
@@ -1655,6 +1720,7 @@ components:
 
     ProductSupplier:
       type: object
+      required: [supplierId, supplierName, packSize, isPreferred]
       properties:
         supplierId: { type: string, format: uuid }
         supplierName: { type: string }
@@ -1677,6 +1743,7 @@ components:
 
     StockStatus:
       type: object
+      required: [productId, sku, name, locationId, locationName, quantityOnHand, quantityReserved, quantityAvailable, stockState, updatedAt]
       properties:
         productId: { type: string, format: uuid }
         sku: { type: string }
@@ -1693,6 +1760,7 @@ components:
 
     StockMovement:
       type: object
+      required: [id, productId, productName, locationId, movementType, quantityDelta, occurredAt]
       properties:
         id: { type: integer, format: int64 }
         productId: { type: string, format: uuid }
@@ -1724,6 +1792,7 @@ components:
 
     Stocktake:
       type: object
+      required: [id, locationId, startedAt, lineCount, totalVariance]
       properties:
         id: { type: string, format: uuid }
         locationId: { type: string, format: uuid }
@@ -1735,6 +1804,7 @@ components:
 
     StocktakeLine:
       type: object
+      required: [productId, sku, name, expectedQty, countedQty, variance]
       properties:
         productId: { type: string, format: uuid }
         sku: { type: string }
@@ -1746,6 +1816,7 @@ components:
 
     Sale:
       type: object
+      required: [id, saleNumber, status, itemCount, subtotalAmount, discountAmount, taxAmount, totalAmount, soldAt]
       properties:
         id: { type: string, format: uuid }
         saleNumber: { type: string }
@@ -1763,6 +1834,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/Sale'
         - type: object
+          required: [locationId, createdBy, lines]
           properties:
             locationId: { type: string, format: uuid }
             createdBy: { type: string, format: uuid }
@@ -1771,6 +1843,7 @@ components:
               type: array
               items:
                 type: object
+                required: [productId, sku, name, quantity, unitPrice, discountAmount, lineTotal]
                 properties:
                   productId: { type: string, format: uuid }
                   sku: { type: string }
@@ -1815,6 +1888,7 @@ components:
 
     PurchaseOrder:
       type: object
+      required: [id, poNumber, supplierId, supplierName, status, totalAmount, lineCount]
       properties:
         id: { type: string, format: uuid }
         poNumber: { type: string }
@@ -1831,6 +1905,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/PurchaseOrder'
         - type: object
+          required: [locationId, lines]
           properties:
             locationId: { type: string, format: uuid }
             notes: { type: string, nullable: true }
@@ -1838,6 +1913,7 @@ components:
               type: array
               items:
                 type: object
+                required: [productId, sku, name, quantityOrdered, quantityReceived, quantityOutstanding, unitCost, lineTotal]
                 properties:
                   productId: { type: string, format: uuid }
                   sku: { type: string }
@@ -1873,6 +1949,7 @@ components:
 
     Forecast:
       type: object
+      required: [productId, locationId, method, generatedAt, historyDays, avgDailyDemand, demandStddev, horizonDays, forecastQty, serviceLevel]
       properties:
         productId: { type: string, format: uuid }
         locationId: { type: string, format: uuid }
@@ -1899,6 +1976,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/Forecast'
         - type: object
+          required: [explanation, history]
           properties:
             explanation:
               type: string
@@ -1909,6 +1987,7 @@ components:
               description: Daily demand series; zero-demand days included on purpose
               items:
                 type: object
+                required: [day, unitsSold, hadStockout]
                 properties:
                   day: { type: string, format: date }
                   unitsSold: { type: number }
@@ -1916,6 +1995,7 @@ components:
 
     ReorderRecommendation:
       type: object
+      required: [id, productId, sku, name, locationId, quantityOnHand, reorderPoint, recommendedQty, urgency, rationale, status, createdAt]
       properties:
         id: { type: string, format: uuid }
         productId: { type: string, format: uuid }
@@ -1936,6 +2016,7 @@ components:
 
     DashboardSummary:
       type: object
+      required: [period, salesTotal, salesCount, grossProfit, inventoryValue, lowStockCount, outOfStockCount, openRecommendationCount, salesTrend, topProducts]
       properties:
         period: { type: string }
         salesTotal: { type: number }
@@ -1949,6 +2030,7 @@ components:
           type: array
           items:
             type: object
+            required: [day, revenue]
             properties:
               day: { type: string, format: date }
               revenue: { type: number }
@@ -1956,6 +2038,7 @@ components:
           type: array
           items:
             type: object
+            required: [productId, name, unitsSold]
             properties:
               productId: { type: string, format: uuid }
               name: { type: string }

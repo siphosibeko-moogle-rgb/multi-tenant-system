@@ -44,10 +44,9 @@ fun RecordSaleDialog(
         },
         text = {
             Column {
-                Text(product.name.orEmpty(), style = MaterialTheme.typography.bodyLarge)
+                Text(product.name, style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "In stock: " +
-                        (product.quantityOnHand?.stripTrailingZeros()?.toPlainString() ?: "—"),
+                    "In stock: " + product.quantityOnHand.stripTrailingZeros().toPlainString(),
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Spacer(Modifier.height(16.dp))

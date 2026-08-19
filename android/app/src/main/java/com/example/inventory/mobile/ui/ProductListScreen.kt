@@ -270,9 +270,9 @@ private fun ProductRow(product: Product, onClick: () -> Unit) {
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(product.name.orEmpty(), style = MaterialTheme.typography.bodyLarge)
+            Text(product.name, style = MaterialTheme.typography.bodyLarge)
             Text(
-                product.sku.orEmpty(),
+                product.sku,
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -280,11 +280,11 @@ private fun ProductRow(product: Product, onClick: () -> Unit) {
             Text(
                 // stripTrailingZeros so a numeric(14,3) column does not show
                 // "12.000" to someone counting tins on a shelf.
-                product.quantityOnHand?.stripTrailingZeros()?.toPlainString() ?: "—",
+                product.quantityOnHand.stripTrailingZeros().toPlainString(),
                 style = MaterialTheme.typography.bodyLarge,
             )
             Text(
-                product.stockState?.value.orEmpty().replace('_', ' '),
+                product.stockState.value.replace('_', ' '),
                 style = MaterialTheme.typography.bodySmall,
                 color = if (product.stockState == Product.StockState.OUT_OF_STOCK) {
                     MaterialTheme.colorScheme.error

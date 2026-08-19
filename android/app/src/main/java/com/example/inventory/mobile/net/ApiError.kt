@@ -59,8 +59,14 @@ fun <T> Response<T>.toApiError(moshi: Moshi = ProblemParsing.moshi): ApiError {
     // The oversell case carries numbers, and showing them is the difference
     // between an error and an instruction. M2 proved the backend populates them
     // and M3 promoted the schema so the client gets them typed.
+    // Still nullable, and deliberately so: a 409 from an endpoint that is not
+    // moving stock is an ordinary Problem carrying none of these fields, and
+    // parsing one yields null. What the tightened contract removed is the
+    // per-FIELD checking — within an InsufficientStockProblem the three numbers
+    // are now required, so a partial one is a malformed response, not a case to
+    // handle.
     val insufficient = ProblemParsing.parseInsufficientStock(raw, moshi)
-    if (code() == 409 && insufficient?.available != null && insufficient.requested != null) {
+    if (code() == 409 && insufficient != null) {
         return ApiError(
             message = "Not enough stock to complete this sale.",
             detail = "Asked for ${insufficient.requested.stripTrailingZeros().toPlainString()}, " +

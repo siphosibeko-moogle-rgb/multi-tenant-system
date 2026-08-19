@@ -103,7 +103,12 @@ class ApiErrorTest {
     fun `a 409 that is not an oversell still reads sensibly`() {
         val error = errorResponse(
             409,
-            """{"title":"Conflict","status":409,"detail":"A business with that slug already exists"}""",
+            // `type` included because the contract requires it and the server
+            // always sends it. The fixture used to omit it, which made this test
+            // assert against a body the API cannot actually produce.
+            """{"type":"https://api.example.com/problems/tenant-slug-taken",
+                "title":"Conflict","status":409,
+                "detail":"A business with that slug already exists"}""",
         ).toApiError()
 
         // Here the server's wording IS the useful part, so it is shown verbatim.

@@ -113,13 +113,6 @@ class RecordSaleViewModel @Inject constructor(
         val requestId = current.pendingRequestId ?: return
         val soldAt = current.soldAt ?: return
 
-        // Product.id is nullable in the generated model because the contract's
-        // Product schema marks no field required, while SaleWriteRequest's line
-        // DOES require productId. So a client has to null-check an id that
-        // always exists in practice. Noted as a contract finding rather than
-        // papered over with !!, which would be a crash on a malformed response.
-        val productId = product.id ?: return
-
         _state.value = current.copy(submitting = true, error = null)
 
         viewModelScope.launch {
@@ -128,7 +121,7 @@ class RecordSaleViewModel @Inject constructor(
                     SaleWriteRequest(
                         lines = listOf(
                             SaleWriteRequestLinesInner(
-                                productId = productId,
+                                productId = product.id,
                                 quantity = quantity,
                             )
                         ),
