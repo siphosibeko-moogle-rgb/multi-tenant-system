@@ -21,6 +21,7 @@ import com.example.inventory.inventory.InventoryDtos.StockMovement;
 import com.example.inventory.inventory.InventoryDtos.StockStatusPage;
 import com.example.inventory.inventory.InventoryDtos.TransferRequest;
 import com.example.inventory.inventory.StockLedgerService.MovementRequest;
+import com.example.inventory.web.ConflictException;
 import com.example.inventory.web.NotFoundException;
 
 import jakarta.validation.Valid;
@@ -71,8 +72,16 @@ public class InventoryController {
     ResponseEntity<StockMovement> adjust(@Valid @RequestBody AdjustmentRequest request) {
         UUID locationId = request.locationId() != null
                 ? request.locationId()
-                : queries.defaultLocationId().orElseThrow(() -> new NotFoundException(
-                        "This business has no default location; specify locationId"));
+                : queries.defaultLocationId().orElseThrow(() -> new ConflictException(
+                        // Not 404. Nothing was looked up and not found: the
+                        // request named no location and the business has none
+                        // marked default, which is a state of the tenant rather
+                        // than a missing resource. As a 404 it was also
+                        // indistinguishable from "that product does not exist",
+                        // so a client could not tell a fixable configuration
+                        // problem from a bad id.
+                        "This business has no default location; specify locationId",
+                        "no-default-location"));
 
         var posted = ledger.post(new MovementRequest(
                 request.productId(),
@@ -129,16 +138,26 @@ public class InventoryController {
     /**
      * The service's posted-movement view, as the contract's StockMovement.
      *
-     * <p>productName and createdByName are null here rather than joined: this is
-     * a write response echoing what the caller just sent, and the caller knows
-     * which product it named. The list endpoint joins them because a list is
-     * read by someone who does not.
+     * <p>These were previously nulled out, on the reasoning that a write
+     * response echoing the caller's own request need not repeat what the caller
+     * just sent. That holds for the product and fails for the actor: the client
+     * never sends a user id — the server reads it from the token (T1) — so
+     * nulling {@code createdBy} withheld the one field the client could not have
+     * known. "Who moved this stock" is the first question asked when a count
+     * disagrees with the system.
+     *
+     * <p>{@code productName} was additionally a contract violation: the
+     * StockMovement schema marks it required.
+     *
+     * <p>{@code referenceType} and {@code referenceId} stay null here and are
+     * genuinely absent for an adjustment — it references nothing. Both are
+     * nullable in the contract.
      */
     private static StockMovement toDto(StockLedgerService.PostedMovement posted) {
         return new StockMovement(
                 posted.id(),
                 posted.productId(),
-                null,
+                posted.productName(),
                 posted.locationId(),
                 posted.movementType(),
                 posted.quantityDelta(),
@@ -148,8 +167,8 @@ public class InventoryController {
                 null,
                 posted.reason(),
                 posted.occurredAt(),
-                null,
-                null);
+                posted.createdBy(),
+                posted.createdByName());
     }
 
     @GetMapping("/movements")

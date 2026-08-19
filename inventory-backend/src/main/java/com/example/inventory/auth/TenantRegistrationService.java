@@ -151,6 +151,31 @@ public class TenantRegistrationService {
                 passwordEncoder.encode(request.ownerPassword()),
                 request.ownerName());
 
+        // ---- 3. A default location, so the business can hold stock. ----
+        //
+        // Without this a new tenant is dead on arrival: every stock movement
+        // needs a location, and every endpoint that takes one falls back to the
+        // tenant's default. Registration created none, so the very first
+        // adjustment a new business attempted was refused, and the only way
+        // forward was to discover POST /locations and call it by hand. Found on
+        // the emulator, where the first adjustment after registering failed.
+        //
+        // Same transaction as the tenant and the owner, and it satisfies the
+        // locations policy on its own terms — WITH CHECK (tenant_id =
+        // current_tenant_id()) — because app.tenant_id is bound to the id
+        // generated above. No new privilege and no fourth role.
+        //
+        // "Main" is a starting point rather than a guess at the business's
+        // vocabulary: it is renameable through PATCH /locations, and a shop with
+        // one till never has to think about locations at all.
+        UUID locationId = UUID.randomUUID();
+        appJdbc.update("""
+                INSERT INTO locations (id, tenant_id, name, is_default, is_active)
+                VALUES (?, ?, 'Main', true, true)
+                """,
+                locationId,
+                tenantId);
+
         CurrentUser user = new CurrentUser(
                 userId,
                 request.ownerEmail(),
@@ -159,7 +184,11 @@ public class TenantRegistrationService {
                 new TenantSummary(tenantId, request.slug(), request.businessName()),
                 request.currencyCodeOrDefault(),
                 request.timezoneOrDefault(),
-                null);
+                // Now populated for a freshly registered tenant. The contract
+                // still marks it nullable, and that stays correct: tenants
+                // registered before this change have no default location, and
+                // nothing stops one being deactivated later.
+                locationId);
 
         return tokenIssuer.issueFor(tenantId, userId, "owner", user, null);
     }

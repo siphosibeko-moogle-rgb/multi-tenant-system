@@ -293,4 +293,31 @@ class TenantRegistrationTest extends AbstractIntegrationTest {
                 .as("the password must be stored as a bcrypt hash, never in the clear")
                 .startsWith("$2");
     }
+
+    @Test
+    @DisplayName("creates a default location, so the business can hold stock immediately")
+    void registrationCreatesADefaultLocation() {
+        // Without this a new tenant is dead on arrival. Every stock movement
+        // needs a location and every endpoint that takes one falls back to the
+        // tenant's default, so the first adjustment a new business attempted was
+        // refused and the only way forward was to find POST /locations and call
+        // it by hand. Found on the emulator, on the very first curl after
+        // registering.
+        var tokens = registrationService.register(request(uniqueSlug()));
+        UUID tenantId = tokens.user().tenant().id();
+
+        assertThat(asOwner(
+                "SELECT count(*) FROM locations WHERE tenant_id = ? AND is_default",
+                Long.class, tenantId))
+                .as("exactly one default location — two would make the fallback ambiguous")
+                .isEqualTo(1L);
+
+        // And it is reported back, so a client does not have to go looking.
+        assertThat(tokens.user().defaultLocationId())
+                .as("the registration response must name the location it created")
+                .isNotNull();
+        assertThat(asOwner("SELECT id FROM locations WHERE tenant_id = ? AND is_default",
+                UUID.class, tenantId))
+                .isEqualTo(tokens.user().defaultLocationId());
+    }
 }

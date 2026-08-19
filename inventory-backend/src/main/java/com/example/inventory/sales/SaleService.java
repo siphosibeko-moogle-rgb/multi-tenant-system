@@ -21,6 +21,7 @@ import com.example.inventory.sales.SalesDtos.SaleDetail;
 import com.example.inventory.sales.SalesDtos.SaleLine;
 import com.example.inventory.sales.SalesDtos.SaleWriteRequest;
 import com.example.inventory.tenancy.TenantContext;
+import com.example.inventory.web.ConflictException;
 import com.example.inventory.web.NotFoundException;
 
 /**
@@ -109,8 +110,16 @@ public class SaleService {
     private SaleDetail insertSale(UUID tenantId, UUID actor, SaleWriteRequest request) {
         UUID locationId = request.locationId() != null
                 ? request.locationId()
-                : defaultLocationId().orElseThrow(() -> new NotFoundException(
-                        "This business has no default location; specify locationId"));
+                : defaultLocationId().orElseThrow(() -> new ConflictException(
+                        // Not 404. Nothing was looked up and not found: the
+                        // request named no location and the business has none
+                        // marked default, which is a state of the tenant rather
+                        // than a missing resource. As a 404 it was also
+                        // indistinguishable from "that product does not exist",
+                        // so a client could not tell a fixable configuration
+                        // problem from a bad id.
+                        "This business has no default location; specify locationId",
+                        "no-default-location"));
 
         UUID saleId = UUID.randomUUID();
         OffsetDateTime soldAt = request.soldAt() != null ? request.soldAt() : OffsetDateTime.now();

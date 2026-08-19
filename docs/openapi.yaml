@@ -1523,9 +1523,12 @@ components:
         tenant: { $ref: '#/components/schemas/TenantSummary' }
         currencyCode: { type: string }
         timezone: { type: string }
-        # Null until the tenant has a default location. Registration does not
-        # create one, so this is null for every freshly registered business —
-        # which is why it is not in `required`. A client must handle its absence.
+        # Registration now creates a "Main" location and this points at it, so
+        # a freshly registered business has one. Still NOT required, and that is
+        # not an oversight: tenants registered before that change have no
+        # default location, and nothing stops the only one being deactivated
+        # later. A client must handle its absence rather than assume the
+        # happy-path shape holds for every account it will ever see.
         defaultLocationId: { type: string, format: uuid, nullable: true }
 
     User:

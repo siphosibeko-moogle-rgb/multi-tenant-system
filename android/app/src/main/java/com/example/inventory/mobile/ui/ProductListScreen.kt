@@ -260,13 +260,26 @@ fun ProductListScreen(
     }
 }
 
+/**
+ * One product, with an explicit route to the sale sheet.
+ *
+ * The whole row is clickable AND there is a labelled "Sell" button. That is
+ * deliberate duplication rather than indecision: emulator verification reported
+ * "product rows are not tappable — there is no route to the sale screen", and a
+ * bare whole-row tap is undiscoverable. Nothing on the row said it could be
+ * tapped, so the only way to find the route was to already know it was there.
+ *
+ * The button is the affordance; the row stays clickable because a cashier
+ * reaching for a product name rather than a small target is the common case.
+ */
 @Composable
 private fun ProductRow(product: Product, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column(modifier = Modifier.weight(1f)) {
@@ -276,24 +289,49 @@ private fun ProductRow(product: Product, onClick: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        Column(horizontalAlignment = Alignment.End) {
+        Column(
+            horizontalAlignment = Alignment.End,
+            modifier = Modifier.padding(end = 4.dp),
+        ) {
             Text(
                 // stripTrailingZeros so a numeric(14,3) column does not show
                 // "12.000" to someone counting tins on a shelf.
                 product.quantityOnHand.stripTrailingZeros().toPlainString(),
                 style = MaterialTheme.typography.bodyLarge,
             )
-            Text(
-                product.stockState.value.replace('_', ' '),
-                style = MaterialTheme.typography.bodySmall,
-                color = if (product.stockState == Product.StockState.OUT_OF_STOCK) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
+            StockStateLabel(product)
         }
+        // Not disabled for out-of-stock. Overselling must be refused by the
+        // ledger and reported with the real numbers (T12) — hiding the button
+        // would move that decision to a cached quantity the client cannot trust.
+        TextButton(onClick = onClick) { Text("Sell") }
     }
+}
+
+/**
+ * The stock label, which says nothing when it has nothing to say.
+ *
+ * `unknown` is what `v_stock_status` returns when a product has no reorder
+ * point, which is every product until someone sets one — so a shop with stock
+ * on the shelf saw "10" next to the word "unknown". The backend now treats a
+ * missing threshold as `ok`, and this suppresses the label entirely for the
+ * `unknown` that remains, because a state the system cannot determine is not
+ * worth a word on a row a cashier scans in half a second.
+ */
+@Composable
+private fun StockStateLabel(product: Product) {
+    if (product.stockState == Product.StockState.UNKNOWN) {
+        return
+    }
+    Text(
+        product.stockState.value.replace('_', ' '),
+        style = MaterialTheme.typography.bodySmall,
+        color = if (product.stockState == Product.StockState.OUT_OF_STOCK) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+    )
 }
 
 @Composable

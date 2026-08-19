@@ -115,16 +115,26 @@ public class StockLedgerService {
     public record Transfer(PostedMovement out, PostedMovement in) {
     }
 
+    /**
+     * @param createdBy     who posted it, from the token — never from the
+     *                      request. Null only for a movement with no user behind
+     *                      it, which is why the contract keeps it nullable.
+     * @param createdByName resolved for display, so a client does not have to
+     *                      fetch a user to render "who".
+     */
     public record PostedMovement(
             long id,
             UUID productId,
+            String productName,
             UUID locationId,
             String movementType,
             BigDecimal quantityDelta,
             BigDecimal balanceAfter,
             BigDecimal unitCost,
             String reason,
-            OffsetDateTime occurredAt) {
+            OffsetDateTime occurredAt,
+            UUID createdBy,
+            String createdByName) {
     }
 
     /**
@@ -258,16 +268,21 @@ public class StockLedgerService {
                 WHERE product_id = ? AND location_id = ?
                 """, BigDecimal.class, request.productId(), request.locationId());
 
+        Echo echo = readEcho(id);
+
         return new PostedMovement(
                 id,
                 request.productId(),
+                echo.productName(),
                 request.locationId(),
                 request.movementType(),
                 request.quantityDelta(),
                 balanceAfter,
                 request.unitCost(),
                 request.reason(),
-                readOccurredAt(id));
+                echo.occurredAt(),
+                echo.createdBy(),
+                echo.createdByName());
     }
 
     private long insert(UUID tenantId, UUID actor, MovementRequest request) {
@@ -296,9 +311,55 @@ public class StockLedgerService {
                 actor);
     }
 
-    private OffsetDateTime readOccurredAt(long id) {
-        return jdbc.queryForObject(
-                "SELECT occurred_at FROM stock_movements WHERE id = ?", OffsetDateTime.class, id);
+    /** The parts of a posted movement that only the database can answer. */
+    private record Echo(OffsetDateTime occurredAt, String productName,
+                        UUID createdBy, String createdByName) {
+    }
+
+    /**
+     * Reads back what the insert produced: the stored timestamp, the product's
+     * name, and who posted it.
+     *
+     * <p>This replaced a read of {@code occurred_at} alone. The write response
+     * previously hardcoded {@code productName}, {@code createdBy} and
+     * {@code createdByName} to null on the grounds that a caller echoing its own
+     * write already knows what it sent — which is true of the product, and false
+     * of the actor: the client sends no user id, the server takes it from the
+     * token, so the client cannot fill it in and neither could anyone reading
+     * the response later.
+     *
+     * <p>"Who moved this stock" is the first question asked when a physical
+     * count disagrees with the system, and answering it from the write response
+     * costs one already-necessary round trip. {@code productName} is also
+     * <em>required</em> by the contract's StockMovement schema, so emitting null
+     * there was a violation — one that
+     * {@code ResponseRequiredFieldsHttpTest} missed because it exercised
+     * {@code GET /inventory/movements}, which joins these columns, and not the
+     * POST response, which did not.
+     *
+     * <p>{@code created_by} is nullable and stays so: a movement posted by a
+     * background job has no user behind it. The LEFT JOIN keeps that case
+     * working rather than dropping the row.
+     */
+    private Echo readEcho(long id) {
+        return jdbc.queryForObject("""
+                SELECT m.occurred_at,
+                       p.name       AS product_name,
+                       m.created_by,
+                       u.full_name  AS created_by_name
+                FROM stock_movements m
+                JOIN products p
+                     ON p.tenant_id = m.tenant_id AND p.id = m.product_id
+                LEFT JOIN users u
+                     ON u.tenant_id = m.tenant_id AND u.id = m.created_by
+                WHERE m.id = ?
+                """,
+                (rs, row) -> new Echo(
+                        rs.getObject("occurred_at", OffsetDateTime.class),
+                        rs.getString("product_name"),
+                        rs.getObject("created_by", UUID.class),
+                        rs.getString("created_by_name")),
+                id);
     }
 
     /**

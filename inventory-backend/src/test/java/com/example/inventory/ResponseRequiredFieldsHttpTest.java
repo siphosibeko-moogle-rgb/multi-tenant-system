@@ -274,11 +274,11 @@ class ResponseRequiredFieldsHttpTest extends AbstractIntegrationTest {
         assertThat(response.status()).isEqualTo(200);
         satisfies(response.json(), "CurrentUser");
 
-        // The one CurrentUser field deliberately NOT required. This tenant has a
-        // default location; a freshly registered one does not, because
-        // registration creates none — which is why the contract marks it
-        // nullable. Asserted here so a future change to make it required has to
-        // confront that case rather than discover it on a device.
+        // The one CurrentUser field deliberately NOT required. Registration now
+        // creates a default location, so the common case is populated — but
+        // tenants created before that change have none, and a location can be
+        // deactivated. Asserted here so that "it is always set in practice"
+        // cannot quietly become "mark it required".
         assertThat(requiredOf("CurrentUser")).doesNotContain("defaultLocationId");
     }
 
@@ -324,6 +324,31 @@ class ResponseRequiredFieldsHttpTest extends AbstractIntegrationTest {
         var response = http().get("/inventory", ownerToken());
         assertThat(response.status()).isEqualTo(200);
         eachSatisfies(response.json().get("items"), "StockStatus");
+    }
+
+    @Test
+    @DisplayName("POST /inventory/adjustments satisfies StockMovement, and names the actor")
+    void adjustmentEchoSatisfiesStockMovement() {
+        var response = http().postWithToken("/inventory/adjustments", """
+                {"productId":"%s","quantityDelta":4,"reason":"opening"}
+                """.formatted(productId), ownerToken());
+        assertThat(response.status()).isEqualTo(201);
+
+        // The WRITE response, not the list. The sweep originally checked only
+        // GET /inventory/movements, which joins productName and createdByName —
+        // so this endpoint emitted productName: null against a schema that marks
+        // it required, and nothing noticed. A response is not covered because a
+        // sibling response is.
+        satisfies(response.json(), "StockMovement");
+
+        // createdBy is nullable in the contract (a movement can have no user
+        // behind it) so the sweep above cannot require it. Here the caller IS
+        // authenticated, and the answer to "who moved this stock" is the first
+        // thing wanted when a physical count disagrees with the system.
+        assertThat(response.json().get("createdBy").asString())
+                .as("an authenticated adjustment must name its actor")
+                .isEqualTo(userId.toString());
+        assertThat(response.json().get("createdByName").asString()).isEqualTo("Olu Owner");
     }
 
     @Test

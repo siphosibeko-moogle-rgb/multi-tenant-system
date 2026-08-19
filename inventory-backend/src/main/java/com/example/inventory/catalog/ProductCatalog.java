@@ -204,8 +204,16 @@ public class ProductCatalog {
         }
         UUID locationId = opening.locationId() != null
                 ? opening.locationId()
-                : defaultLocationId().orElseThrow(() -> new NotFoundException(
-                        "This business has no default location; specify openingStock.locationId"));
+                : defaultLocationId().orElseThrow(() -> new ConflictException(
+                        // Not 404. Nothing was looked up and not found: the
+                        // request named no location and the business has none
+                        // marked default, which is a state of the tenant rather
+                        // than a missing resource. As a 404 it was also
+                        // indistinguishable from "that product does not exist",
+                        // so a client could not tell a fixable configuration
+                        // problem from a bad id.
+                        "This business has no default location; specify openingStock.locationId",
+                        "no-default-location"));
 
         ledger.post(new MovementRequest(productId, locationId, "opening_balance",
                 opening.quantity(), opening.unitCost(), null, null, "opening stock", null));
@@ -425,14 +433,29 @@ public class ProductCatalog {
                 rs.getObject("updated_at", OffsetDateTime.class));
     }
 
-    /** Mirrors the CASE in {@code v_stock_status}, for the single-product reads. */
+    /**
+     * Mirrors the CASE in {@code v_stock_status}, for the single-product reads.
+     *
+     * <p><strong>These two must agree.</strong> This method exists because the
+     * per-product reads do not go through the view, so the same question is
+     * answered in two places — and a divergence would show as the list and the
+     * detail page disagreeing about the same product, which is the kind of bug
+     * people report as "the app is wrong" without being able to say how.
+     * {@code StockStateTest} asserts they agree across the interesting cases.
+     *
+     * <p>No reorder point means {@code ok}, not {@code unknown}: nothing sets a
+     * reorder point until M7's forecaster, so {@code unknown} was the state of
+     * essentially every product in every new business. Not knowing whether stock
+     * is <em>low</em> is not the same as not knowing what the stock <em>is</em>.
+     * See the note in {@code R__views.sql}, which is the fuller version.
+     */
     private static String stockState(BigDecimal onHand, BigDecimal available,
                                      BigDecimal reorderPoint) {
         if (onHand == null || onHand.signum() <= 0) {
             return "out_of_stock";
         }
         if (reorderPoint == null) {
-            return "unknown";
+            return "ok";
         }
         return available != null && available.compareTo(reorderPoint) <= 0 ? "reorder" : "ok";
     }
