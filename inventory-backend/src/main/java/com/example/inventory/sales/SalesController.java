@@ -1,14 +1,18 @@
 package com.example.inventory.sales;
 
+import java.util.UUID;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.inventory.sales.SalesDtos.SaleDetail;
+import com.example.inventory.sales.SalesDtos.VoidRequest;
 import com.example.inventory.sales.SalesDtos.SaleWriteRequest;
 
 import jakarta.validation.Valid;
@@ -52,5 +56,29 @@ public class SalesController {
         return ResponseEntity
                 .status(recorded.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
                 .body(recorded.sale());
+    }
+
+    /**
+     * Voids a sale and returns its outstanding stock.
+     *
+     * <p>200, not 201: the contract says so, and it is right — nothing new is
+     * created that the caller can address. The compensating movements are
+     * consequences of the void, not resources of their own.
+     *
+     * <p>Owner and manager only. A clerk records sales; reversing one is the
+     * decision the till is protected from, and it is the same reasoning that
+     * keeps adjustments away from clerks in {@code InventoryController} — an
+     * operation with no external event behind it, that moves stock and money.
+     * The contract's UserRole descriptions give clerk "record sales, receive
+     * stock, count", which does not include undoing them.
+     */
+    @PostMapping("/{saleId}/void")
+    @PreAuthorize("hasAnyRole('owner', 'manager')")
+    ResponseEntity<SaleDetail> voidSale(@PathVariable UUID saleId,
+                                        @RequestBody(required = false) VoidRequest request) {
+        // The contract marks the body optional, so a void with no reason at all
+        // must work rather than 400 on a missing object.
+        String reason = request == null ? null : request.reason();
+        return ResponseEntity.ok(sales.voidSale(saleId, reason));
     }
 }

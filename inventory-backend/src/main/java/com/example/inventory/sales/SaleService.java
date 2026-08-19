@@ -107,6 +107,172 @@ public class SaleService {
         }
     }
 
+    /**
+     * Voids a sale: returns everything still outstanding on it, and marks it
+     * voided. The sale row itself is never deleted (T4's spirit — corrections
+     * are new rows, not erasures).
+     *
+     * <h2>Exactly one concurrent void wins, and the database decides</h2>
+     *
+     * <p>The status change is a <strong>conditional</strong> UPDATE —
+     * {@code WHERE id = ? AND status = 'completed'} — and the row count it
+     * returns is the answer. Two simultaneous voids both reach it; PostgreSQL
+     * serialises them on the row lock; the first sees one row updated, the
+     * second re-evaluates its WHERE against the committed new status, matches
+     * nothing, and is refused.
+     *
+     * <p>This is the same reasoning as T12: no read-then-write pre-check, no
+     * "is it already voided?" SELECT followed by an UPDATE. That shape looks
+     * safe and is not — both transactions would read 'completed', both would
+     * proceed, and the stock would be returned twice. The UPDATE <em>is</em> the
+     * check, and its row count is the only thing that can adjudicate.
+     *
+     * <h2>Why the status changes first</h2>
+     *
+     * <p>Before any movement is posted. The lock the UPDATE takes is what makes
+     * the rest of the method exclusive, so taking it last would leave the window
+     * this method exists to close.
+     */
+    public SaleDetail voidSale(UUID saleId, String reason) {
+        UUID actor = TenantContext.currentUserId().orElse(null);
+
+        return ledger.withAvailableFilledIn(() -> transactions.execute(status -> {
+            int updated = jdbc.update(
+                    "UPDATE sales SET status = 'voided', updated_at = now() "
+                            + "WHERE id = ? AND status = 'completed'", saleId);
+
+            if (updated == 0) {
+                // Two very different reasons for zero rows, and they must not be
+                // reported the same way. RLS hides another tenant's sale
+                // entirely, so "no such row" covers both "does not exist" and
+                // "belongs to someone else" — which is exactly T8: 404, never
+                // 403, because a 403 would confirm the id names something real.
+                String current = currentStatus(saleId);
+                if (current == null) {
+                    throw new NotFoundException("No such sale");
+                }
+                throw new ConflictException(
+                        "This sale is " + current + " and cannot be voided",
+                        "sale-not-voidable");
+            }
+
+            returnOutstanding(saleId, actor, reason, true, true, null);
+            return read(saleId).orElseThrow(() -> new NotFoundException("No such sale"));
+        }));
+    }
+
+    private String currentStatus(UUID saleId) {
+        return jdbc.query("SELECT status::text AS status FROM sales WHERE id = ?",
+                        (rs, i) -> rs.getString("status"), saleId)
+                .stream().findFirst().orElse(null);
+    }
+
+    /**
+     * Returns stock against a sale and records the commercial event.
+     *
+     * <p>Shared by the void path and (from step 2) the partial-return path, so
+     * the two cannot disagree about what "already returned" means.
+     *
+     * @param requested per-product quantities, or null to return everything
+     *                  still outstanding — which is what a void wants.
+     * @param restock   false for damaged goods: the refund is recorded and
+     *                  <strong>no ledger movement is posted at all</strong>.
+     */
+    private void returnOutstanding(UUID saleId, UUID actor, String reason,
+                                   boolean restock, boolean isVoid,
+                                   List<SalesDtos.ReturnLine> requested) {
+        UUID groupId = UUID.randomUUID();
+        UUID locationId = saleLocation(saleId);
+
+        for (var outstanding : outstandingByProduct(saleId)) {
+            BigDecimal quantity = requested == null
+                    ? outstanding.outstanding()
+                    : requested.stream()
+                            .filter(l -> l.productId().equals(outstanding.productId()))
+                            .map(SalesDtos.ReturnLine::quantity)
+                            .findFirst().orElse(BigDecimal.ZERO);
+
+            if (quantity.signum() <= 0) {
+                continue;
+            }
+            if (quantity.compareTo(outstanding.outstanding()) > 0) {
+                throw new ConflictException(
+                        "Cannot return %s of %s — only %s remain on this sale".formatted(
+                                quantity.stripTrailingZeros().toPlainString(),
+                                outstanding.sku(),
+                                outstanding.outstanding().stripTrailingZeros().toPlainString()),
+                        "return-exceeds-sale");
+            }
+
+            // The commercial record, written whether or not stock moves. This is
+            // the row that stops the same unit being refunded twice, and for
+            // damaged goods it is the ONLY trace — see V5's note.
+            jdbc.update("""
+                    INSERT INTO sale_returns
+                        (tenant_id, sale_id, product_id, quantity, restocked,
+                         return_group_id, is_void, reason, created_by)
+                    VALUES (current_tenant_id(), ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    saleId, outstanding.productId(), quantity, restock,
+                    groupId, isVoid, reason, actor);
+
+            if (!restock) {
+                // Damaged goods. NO movement — not a movement of zero. The
+                // ledger's CHECK (quantity_delta <> 0) would refuse one, and a
+                // zero row would pollute the demand history M7 trains on with a
+                // transaction that moved nothing. The goods are not going back
+                // on the shelf, so the ledger has nothing to say.
+                continue;
+            }
+
+            ledger.postWithin(new MovementRequest(
+                    outstanding.productId(),
+                    locationId,
+                    "sale_return",
+                    // Positive: stock coming back in. StockLedgerService is the
+                    // only writer of stock_movements (T5) and this path is no
+                    // exception — there is no direct INSERT anywhere here.
+                    quantity,
+                    null,
+                    "sale",
+                    saleId,
+                    reason,
+                    null));
+        }
+    }
+
+    /** What each product on a sale still has outstanding, after prior returns. */
+    private record Outstanding(UUID productId, String sku, BigDecimal outstanding) {
+    }
+
+    private List<Outstanding> outstandingByProduct(UUID saleId) {
+        // Sold minus already-returned, per product. The subquery reads
+        // sale_returns rather than stock_movements deliberately: a damaged-goods
+        // return posts no movement, so a ledger-derived figure would report it
+        // as never returned and allow a second refund of the same unit.
+        return jdbc.query("""
+                SELECT si.product_id,
+                       p.sku,
+                       si.quantity - COALESCE((
+                           SELECT SUM(sr.quantity) FROM sale_returns sr
+                           WHERE sr.sale_id = si.sale_id
+                             AND sr.product_id = si.product_id
+                       ), 0) AS outstanding
+                FROM sale_items si
+                JOIN products p ON p.id = si.product_id
+                WHERE si.sale_id = ?
+                ORDER BY p.sku
+                """, (rs, i) -> new Outstanding(
+                        rs.getObject("product_id", UUID.class),
+                        rs.getString("sku"),
+                        rs.getBigDecimal("outstanding")), saleId);
+    }
+
+    private UUID saleLocation(UUID saleId) {
+        return jdbc.queryForObject(
+                "SELECT location_id FROM sales WHERE id = ?", UUID.class, saleId);
+    }
+
     private SaleDetail insertSale(UUID tenantId, UUID actor, SaleWriteRequest request) {
         UUID locationId = request.locationId() != null
                 ? request.locationId()

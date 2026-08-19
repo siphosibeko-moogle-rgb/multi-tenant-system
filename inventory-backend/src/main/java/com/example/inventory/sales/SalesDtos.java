@@ -55,6 +55,32 @@ public final class SalesDtos {
             @PositiveOrZero BigDecimal discountAmount) {
     }
 
+    /** One line of a return request: which product, how many. */
+    public record ReturnLine(
+            @NotNull UUID productId,
+            @NotNull @Positive BigDecimal quantity) {
+    }
+
+    /**
+     * @param reason  free text, stored on every row the request produces
+     * @param restock false for damaged goods — refunded, but NOT put back on
+     *                the shelf and no ledger movement at all
+     */
+    public record ReturnRequest(
+            @NotEmpty @Valid List<ReturnLine> lines,
+            String reason,
+            Boolean restock) {
+
+        /** The contract's default is true: goods come back unless said otherwise. */
+        public boolean restockOrDefault() {
+            return restock == null || restock;
+        }
+    }
+
+    /** Body of a void request. The contract makes reason optional. */
+    public record VoidRequest(String reason) {
+    }
+
     public record SaleLine(
             UUID productId,
             String sku,

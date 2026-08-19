@@ -38,7 +38,12 @@ class SchemaSmokeTest extends AbstractIntegrationTest {
             "product_suppliers", "stock_movements", "product_stock", "stocktakes",
             "stocktake_lines", "sales", "sale_items", "purchase_orders", "purchase_order_items",
             "supplier_lead_time_observations", "demand_daily", "forecasts", "forecast_accuracy",
-            "reorder_recommendations", "audit_log");
+            "reorder_recommendations", "audit_log",
+            // V5. Added in the change that creates it, per T11 — not as an
+            // end-of-milestone tidy-up, because a table that misses this sweep
+            // breaks nothing and stays uncovered until someone reads another
+            // tenant's row in production.
+            "sale_returns");
 
     @Autowired
     private JdbcTemplate jdbc;

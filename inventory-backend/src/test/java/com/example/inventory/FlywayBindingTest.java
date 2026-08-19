@@ -135,7 +135,7 @@ class FlywayBindingTest {
     }
 
     @Test
-    @DisplayName("all four migrations actually applied on this context's own database")
+    @DisplayName("every migration actually applied on this context's own database")
     void migrationsWereAppliedHere() {
         List<String> versions = queryAsOwner(
                 "SELECT version FROM flyway_schema_history WHERE version IS NOT NULL "
@@ -143,7 +143,12 @@ class FlywayBindingTest {
 
         // Guards the test itself: if this were empty, migrationsRunAsTheSchemaOwner
         // would be asserting over nothing and would pass for the wrong reason.
-        assertThat(versions).containsExactly("1", "2", "3", "4");
+        // Written out by hand, and kept that way on purpose: a list read from
+        // flyway_schema_history would shrink to match whatever it found,
+        // including a migration that silently failed to apply, and would agree
+        // with the bug instead of catching it. Same reasoning as T11's tables.
+        // V5 (sale_returns) added with the migration that introduced it.
+        assertThat(versions).containsExactly("1", "2", "3", "4", "5");
     }
 
     @Test

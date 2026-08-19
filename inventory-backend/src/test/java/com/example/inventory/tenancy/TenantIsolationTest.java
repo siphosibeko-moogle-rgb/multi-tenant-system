@@ -87,7 +87,12 @@ class TenantIsolationTest extends AbstractIntegrationTest {
             "product_suppliers", "stock_movements", "product_stock", "stocktakes",
             "stocktake_lines", "sales", "sale_items", "purchase_orders", "purchase_order_items",
             "supplier_lead_time_observations", "demand_daily", "forecasts", "forecast_accuracy",
-            "reorder_recommendations", "audit_log");
+            "reorder_recommendations", "audit_log",
+            // V5. Added in the change that creates it, per T11 — not as an
+            // end-of-milestone tidy-up, because a table that misses this sweep
+            // breaks nothing and stays uncovered until someone reads another
+            // tenant's row in production.
+            "sale_returns");
 
     private static final UUID TENANT_A = newTenantId();
     private static final UUID TENANT_B = newTenantId();
@@ -216,6 +221,15 @@ class TenantIsolationTest extends AbstractIntegrationTest {
         stmt.execute("""
                 INSERT INTO sale_items (tenant_id, sale_id, product_id, quantity, unit_price)
                 VALUES ('%s', '%s', '%s', 1, 79.99)
+                """.formatted(t, sale, product));
+
+        // V5. Seeded for BOTH tenants, like every other row here — the sweep's
+        // assertion is that A sees zero of B's, and that is vacuous unless B
+        // actually has one.
+        stmt.execute("""
+                INSERT INTO sale_returns
+                    (tenant_id, sale_id, product_id, quantity, restocked, return_group_id)
+                VALUES ('%s', '%s', '%s', 1, true, gen_random_uuid())
                 """.formatted(t, sale, product));
 
         stmt.execute("""
