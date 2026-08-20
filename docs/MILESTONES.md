@@ -203,54 +203,106 @@ server that ignores the tenant's timezone
 - A partial receipt moves the PO to `partial` and leaves the right outstanding qty
 - Receiving more than ordered returns 409
 - After three receipts from one supplier, `observedLeadTime.averageDays` reflects
-actual ordered→received intervals, not the value typed into the supplier form
+actual ordered→received intervals, not the value typed into the supplier form —
+this proves the pipeline populates correctly. It is a lower bar than the one
+M7 needs to actually *trust* the average for a reorder point; see
+`docs/adr/forecasting.md` §2 for why those are different numbers (3 vs. 5) on
+purpose.
 
 ---
 
 ## M6 — Seed data ★
 *~2–3 days*
 
-Not glamorous, and skipping it makes M7 impossible to build or demo.
+Not glamorous, and skipping it makes M7 impossible to build or demo. A
+generator that only produces well-behaved data makes M7 *look* like it works
+— every shape below exists to make a specific M7 failure mode demonstrable,
+not just to look varied. See `docs/adr/forecasting.md` for how M7 will use
+each one.
 
 **Build**
 - A generator producing 6–12 months of synthetic history across deliberately
 different demand shapes:
-- steady seller (~7–8/week, low variance) — the worked example from the brief
-- seasonal / trending product
-- intermittent (sells on maybe 1 day in 10) — this breaks naive averages
-- dead stock (no sales in months)
-- a product with a stockout period in its history
-- a brand-new product with 5 days of data
+- **steady seller, roughly 20/week with low variance** — the worked example
+(matches the plain-English explanation in `docs/adr/forecasting.md` §6:
+"You sell about 20 a week...")
+- **one with a genuine stockout period** in its history, so the
+`had_stockout` exclusion (`docs/adr/forecasting.md` §3) is actually
+testable — a seed set with no stockout days can't tell "excludes correctly"
+from "happens to average right by luck"
+- **intermittent, selling on roughly 1 day in 10** — this breaks naive
+averages and is what routes `MethodSelector` to Croston
+- **seasonal or trending**
+- **dead stock**, no sales in months — must still be seeded through a full
+window; it stays `insufficient_data` forever and that's the point (§5)
+- **brand-new, under 2 weeks of history** — fails the readiness threshold
+outright
 
 **Done when**
 - One command populates two tenants with distinct, realistic histories
 - `demand_daily` includes zero-demand days — verify this explicitly, it is the
 single most common forecasting bug
+- The stockout-period product shows visibly lower recorded sales during its
+`had_stockout` window than its surrounding baseline, so there is something
+real for the M7 exclusion to exclude
+- The intermittent product's history is seeded far enough back (within the
+6–12 month window) that it eventually crosses the readiness threshold — see
+`docs/adr/forecasting.md` §5, it needs roughly 14 weeks at a 1-in-10 rate,
+noticeably longer than the steady seller
 
 ---
 
 ## M7 — Forecasting ★
 *~2 weeks*
 
+Design decisions (the reorder-point formula, the lead-time source and its
+sample-count threshold, the censored-demand rule, the method-selection split,
+and the exact readiness thresholds) are recorded ahead of this milestone in
+`docs/adr/forecasting.md` — read it before implementing any of the bullets
+below rather than re-deriving them.
+
 **Build**
 - `DemandRollupJob`: movements → `demand_daily`, in the tenant's timezone
 - `ForecastMethod` strategy: moving average, weighted MA, exponential smoothing,
 Croston for intermittent demand
-- `MethodSelector` choosing by data shape, not by config
+- `MethodSelector` choosing by data shape, not by config — see
+`docs/adr/forecasting.md` §4 for the three buckets and the split condition
 - Reorder point = `avg daily demand × lead time + safety stock`, safety stock
-from demand variability and the service level
+from demand variability and the service level (exact formula:
+`docs/adr/forecasting.md` §1)
+- Lead time is the observed figure from `supplier_lead_time_observations`
+when the supplier has enough samples, falling back to
+`suppliers.lead_time_days` otherwise (`docs/adr/forecasting.md` §2)
 - `ReorderService` producing recommendations with a plain-English rationale
+(template: `docs/adr/forecasting.md` §6) — required on every forecast,
+including `insufficient_data` ones
+- `forecast_accuracy` scored against the naive "same as last period" baseline
+from day one (`docs/adr/forecasting.md` §7) — not added later once a real
+model exists to justify
 
 **Done when**
-- The steady seller reports ~1.1/day and a sensible days-of-cover figure
+- The steady seller (20/week) reports ~2.9/day and a sensible days-of-cover
+figure
 - The intermittent product does **not** get a naive-average forecast — the
 selector routes it to Croston
-- The 5-day-old product returns `method: insufficient_data`, a null stockout
-date, and low confidence — it must not produce a confident number
-- Days with a recorded stockout do not drag average demand down
-- A product whose supplier has a 21-day lead time gets a proportionally higher
-reorder point than the same product with a 3-day supplier
-- `forecast_accuracy` rows appear after the evaluation job runs
+- A product below the readiness threshold (`docs/adr/forecasting.md` §5 —
+under 42 days of history, or fewer than 10 non-zero eligible demand days)
+returns `method: insufficient_data`, a null `projectedStockoutOn`, a null
+`reorderPoint`, and a populated `explanation` saying so — it must not
+produce a confident number
+- Days with a recorded stockout do not drag average demand down: the
+stockout-period product's `avgDailyDemand` is computed with those days
+excluded, not averaged in at a lower value
+- A supplier with **5 or more** recorded lead-time observations produces a
+reorder point from the *observed* average, not the promised
+`leadTimeDays` — demonstrated by a supplier where the two figures
+deliberately disagree
+- A supplier with fewer than 5 observations falls back to the promised
+`leadTimeDays`, and a product on that supplier gets a proportionally higher
+reorder point at 21 promised days than the same product at 3
+- `forecast_accuracy` rows appear after the evaluation job runs, each scored
+against the naive "same as last period" baseline over the same period — not
+merely computed and left uncompared
 
 ---
 
