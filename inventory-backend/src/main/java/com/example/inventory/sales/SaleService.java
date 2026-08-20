@@ -161,6 +161,74 @@ public class SaleService {
         }));
     }
 
+    /**
+     * Returns part of a sale: validates the requested quantities against what
+     * is still outstanding, records the commercial event (and, unless this is
+     * a damaged-goods return, the compensating movement), and moves the sale
+     * to {@code partially_refunded} or {@code refunded} depending on what is
+     * left afterwards.
+     *
+     * <h2>Why a row lock instead of void's conditional UPDATE</h2>
+     *
+     * <p>{@link #voidSale} knows its target status before it touches the row —
+     * always {@code 'voided'} — so a single {@code UPDATE ... WHERE status =
+     * 'completed'} can serve as both the guard and the lock in one statement.
+     * A return does not have that luxury: whether this call ends in
+     * {@code partially_refunded} or {@code refunded} depends on the outstanding
+     * quantities <em>after</em> this return is recorded, which cannot be known
+     * until {@link #returnOutstanding} has run.
+     *
+     * <p>So the guard and the status write are two separate statements here,
+     * and what makes that safe under concurrency is the lock taken by the
+     * first one: {@code SELECT ... FOR UPDATE} takes the same row-level lock
+     * a conditional UPDATE would, and holds it for the rest of the
+     * transaction. A second concurrent return against the same sale blocks on
+     * that lock rather than reading a stale outstanding figure — the same
+     * guarantee T12 describes for the ledger trigger's row lock, applied here
+     * to a question the ledger itself has no opinion on: sale-return caps are
+     * enforced by this method, not by any DB trigger, so the lock is the only
+     * thing making the check non-racy.
+     */
+    public SaleDetail returnSale(UUID saleId, SalesDtos.ReturnRequest request) {
+        UUID actor = TenantContext.currentUserId().orElse(null);
+
+        return ledger.withAvailableFilledIn(() -> transactions.execute(status -> {
+            List<String> locked = jdbc.query(
+                    "SELECT status::text AS status FROM sales WHERE id = ? "
+                            + "AND status IN ('completed', 'partially_refunded') FOR UPDATE",
+                    (rs, i) -> rs.getString("status"), saleId);
+
+            if (locked.isEmpty()) {
+                // Same reasoning as voidSale: RLS hides another tenant's sale
+                // entirely, so a missing row and someone else's row look
+                // identical here, and both must be 404 (T8).
+                String current = currentStatus(saleId);
+                if (current == null) {
+                    throw new NotFoundException("No such sale");
+                }
+                throw new ConflictException(
+                        "This sale is " + current + " and cannot accept a return",
+                        "sale-not-returnable");
+            }
+
+            // Quantity validation and the over-return refusal both live inside
+            // returnOutstanding, shared with voidSale so the two paths cannot
+            // disagree about what "already returned" means.
+            returnOutstanding(saleId, actor, request.reason(),
+                    request.restockOrDefault(), false, request.lines());
+
+            BigDecimal stillOutstanding = outstandingByProduct(saleId).stream()
+                    .map(Outstanding::outstanding)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            String newStatus = stillOutstanding.signum() == 0 ? "refunded" : "partially_refunded";
+
+            jdbc.update("UPDATE sales SET status = ?::sale_status, updated_at = now() WHERE id = ?",
+                    newStatus, saleId);
+
+            return read(saleId).orElseThrow(() -> new NotFoundException("No such sale"));
+        }));
+    }
+
     private String currentStatus(UUID saleId) {
         return jdbc.query("SELECT status::text AS status FROM sales WHERE id = ?",
                         (rs, i) -> rs.getString("status"), saleId)
@@ -419,19 +487,29 @@ public class SaleService {
 
         List<SaleLine> lines = jdbc.query("""
                 SELECT si.product_id, p.sku, p.name, si.quantity, si.unit_price,
-                       si.discount_amount, si.line_total
+                       si.discount_amount, si.line_total,
+                       COALESCE((
+                           SELECT SUM(sr.quantity) FROM sale_returns sr
+                           WHERE sr.sale_id = si.sale_id AND sr.product_id = si.product_id
+                       ), 0) AS returned_quantity
                 FROM sale_items si
                 JOIN products p ON p.id = si.product_id
                 WHERE si.sale_id = ?
                 ORDER BY p.sku
-                """, (rs, i) -> new SaleLine(
-                        rs.getObject("product_id", UUID.class),
-                        rs.getString("sku"),
-                        rs.getString("name"),
-                        rs.getBigDecimal("quantity"),
-                        rs.getBigDecimal("unit_price"),
-                        rs.getBigDecimal("discount_amount"),
-                        rs.getBigDecimal("line_total")), saleId);
+                """, (rs, i) -> {
+                    BigDecimal quantity = rs.getBigDecimal("quantity");
+                    BigDecimal returned = rs.getBigDecimal("returned_quantity");
+                    return new SaleLine(
+                            rs.getObject("product_id", UUID.class),
+                            rs.getString("sku"),
+                            rs.getString("name"),
+                            quantity,
+                            rs.getBigDecimal("unit_price"),
+                            rs.getBigDecimal("discount_amount"),
+                            rs.getBigDecimal("line_total"),
+                            returned,
+                            quantity.subtract(returned));
+                }, saleId);
 
         return Optional.of(new SaleDetail(
                 (UUID) s[0], (String) s[1], (String) s[2], (String) s[3],

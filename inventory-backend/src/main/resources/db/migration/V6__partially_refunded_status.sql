@@ -1,0 +1,16 @@
+-- M4 step 2: a return that leaves some of a sale still outstanding needs a
+-- status between 'completed' and 'refunded'. Without it, the only way to
+-- record "2 of 5 came back" would be to either leave status at 'completed'
+-- (which reads as "nothing has happened to this sale") or jump straight to
+-- 'refunded' (which reads as "there is nothing left to return" when 3 units
+-- still are). Both are wrong in a way a cashier would notice immediately.
+--
+-- State machine this value completes:
+--   completed -> partially_refunded -> refunded   (returns, possibly several)
+--   completed -> voided                            (a void, from completed only)
+--
+-- ALTER TYPE ... ADD VALUE cannot be used in the same transaction as a
+-- statement that references the new value. This migration only adds the
+-- value; nothing in this file uses it, so it is safe inside Flyway's
+-- per-migration transaction.
+ALTER TYPE sale_status ADD VALUE 'partially_refunded' AFTER 'completed';

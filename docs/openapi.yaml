@@ -779,7 +779,7 @@ paths:
           schema: { type: string, format: date }
         - name: status
           in: query
-          schema: { type: string, enum: [draft, completed, voided, refunded] }
+          schema: { type: string, enum: [draft, completed, partially_refunded, voided, refunded] }
       responses:
         '200':
           description: OK
@@ -893,6 +893,14 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SaleDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >-
+            Sale is not in a returnable state, or a requested quantity exceeds
+            what remains outstanding
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/Problem' }
 
   # ------------------------------------------------------------------
   # Purchasing
@@ -1823,7 +1831,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         saleNumber: { type: string }
-        status: { type: string, enum: [draft, completed, voided, refunded] }
+        status: { type: string, enum: [draft, completed, partially_refunded, voided, refunded] }
         customerName: { type: string, nullable: true }
         itemCount: { type: integer }
         subtotalAmount: { type: number }
@@ -1846,7 +1854,8 @@ components:
               type: array
               items:
                 type: object
-                required: [productId, sku, name, quantity, unitPrice, discountAmount, lineTotal]
+                required: [productId, sku, name, quantity, unitPrice, discountAmount, lineTotal,
+                           returnedQuantity, outstandingQuantity]
                 properties:
                   productId: { type: string, format: uuid }
                   sku: { type: string }
@@ -1856,6 +1865,12 @@ components:
                   discountAmount: { type: number }
                   taxRate: { type: number }
                   lineTotal: { type: number }
+                  returnedQuantity:
+                    type: number
+                    description: Sum of restocked and damaged-goods returns against this line, from sale_returns
+                  outstandingQuantity:
+                    type: number
+                    description: quantity minus returnedQuantity — what remains available to return
 
     SaleWriteRequest:
       type: object

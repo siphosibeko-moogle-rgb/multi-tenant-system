@@ -88,7 +88,13 @@ public final class SalesDtos {
             BigDecimal quantity,
             BigDecimal unitPrice,
             BigDecimal discountAmount,
-            BigDecimal lineTotal) {
+            BigDecimal lineTotal,
+            // Both derived from sale_returns at read time (never stored) — see
+            // SaleService.read(). A damaged-goods return posts no ledger
+            // movement, so these two are the only place that history is
+            // visible on the line itself.
+            BigDecimal returnedQuantity,
+            BigDecimal outstandingQuantity) {
     }
 
     public record SaleDetail(

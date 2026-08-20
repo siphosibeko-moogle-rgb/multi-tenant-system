@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.example.inventory.sales.SalesDtos.SaleDetail;
 import com.example.inventory.sales.SalesDtos.VoidRequest;
+import com.example.inventory.sales.SalesDtos.ReturnRequest;
 import com.example.inventory.sales.SalesDtos.SaleWriteRequest;
 
 import jakarta.validation.Valid;
@@ -21,7 +22,7 @@ import jakarta.validation.Valid;
  * {@code POST /sales} — the one sales endpoint M3 needs.
  *
  * <p>Pulled forward from M4 so the Android slice has something real to record a
- * sale against. Void, returns and listing stay in M4.
+ * sale against. Listing ({@code GET /sales}) stays in M4.
  *
  * <h2>Role gate</h2>
  *
@@ -80,5 +81,26 @@ public class SalesController {
         // must work rather than 400 on a missing object.
         String reason = request == null ? null : request.reason();
         return ResponseEntity.ok(sales.voidSale(saleId, reason));
+    }
+
+    /**
+     * Returns part of a sale: some or all of what is still outstanding, with
+     * an optional {@code restock: false} for damaged goods that get refunded
+     * but never go back on the shelf.
+     *
+     * <p>201, not 200: unlike void, this creates something new the caller
+     * could conceivably address later — the return itself — even though the
+     * response body is the updated sale rather than the return record. The
+     * contract makes the same call.
+     *
+     * <p>Owner and manager only, for the same reason as void: this reverses a
+     * sale rather than recording one, and the contract's UserRole table gives
+     * clerk "record sales, receive stock, count" — not undoing them.
+     */
+    @PostMapping("/{saleId}/returns")
+    @PreAuthorize("hasAnyRole('owner', 'manager')")
+    ResponseEntity<SaleDetail> returnSale(@PathVariable UUID saleId,
+                                          @Valid @RequestBody ReturnRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(sales.returnSale(saleId, request));
     }
 }
