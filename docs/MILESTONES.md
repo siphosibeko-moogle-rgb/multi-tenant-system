@@ -161,19 +161,25 @@ rejects the whole sale.
 returns the original sale with 200 and moves stock once.
 - [x] `soldAt` accepted from the client, defaulting to now.
 
-**Still owed by M4**
-- `Idempotency-Key` **header** as an alternative to the `clientRequestId` body
-field. The contract declares the header on this endpoint and it is currently
-ignored — only the body field is honoured.
-- **Sale numbering.** M3 generates `S-<millis>-<random>` purely to satisfy the
-`(tenant_id, sale_number)` unique constraint. It is not a receipt number a
-human would read out over the phone, and it has no per-tenant sequence.
-- **Void** and **partial returns**, with the restock flag for damaged goods.
-- `GET /sales`, `GET /sales/{saleId}` — the contract declares them; only POST
-is implemented.
+**Still owed by M4 — status as of the end of M4**
+- ~~`Idempotency-Key` **header** as an alternative to the `clientRequestId`
+body field~~ — done. Wired as a second entry point on `SaleService.record`;
+the body field wins when both are present and differ (it's the value every
+existing idempotency guarantee — the unique index, the replay tests — was
+already built around), the header is consulted only when the body omits it.
+`IdempotencyKeyHeaderHttpTest`.
+- ~~**Sale numbering.**~~ — done. `tenants.next_sale_number`, an atomic
+per-tenant counter allocated by `UPDATE ... RETURNING` (`S-%06d`), not a
+global sequence — a shared counter would leak a tenant's sales volume
+through the gap between two of its numbers. `SaleNumberingHttpTest`.
+- ~~**Void** and **partial returns**, with the restock flag for damaged
+goods~~ — done. `VoidSaleHttpTest`, `ReturnSaleHttpTest`.
+- ~~`GET /sales`, `GET /sales/{saleId}`~~ — done, cursor-paginated on
+`(sold_at, id)` per the contract. `SalesListHttpTest`.
 - Line-level `unitCost` is captured from the product's current cost. Whether a
 sale should snapshot cost at the moment of sale (for margin reporting that
-survives a cost change) is an M4 decision, not something M3 settled.
+survives a cost change) is an M4 decision, not something M3 settled. **Still
+open** — none of the work above touched it.
 
 **Done when**
 - ~~A sale where line 3 oversells persists **nothing**~~ — done in M3,
@@ -186,8 +192,10 @@ tenant's timezone~~ — done in M3,
 `SaleTest.aLateNightSaleLandsOnTheTenantsBusinessDay`, which also asserts the
 naive UTC date would be the *wrong* day, so the test cannot pass against a
 server that ignores the tenant's timezone
-- Voiding returns exactly the sold quantity and leaves the original sale row intact
-- The `Idempotency-Key` header behaves identically to the body field
+- ~~Voiding returns exactly the sold quantity and leaves the original sale row
+intact~~ — done, `VoidSaleHttpTest.voidReturnsTheStockAndKeepsTheSale`
+- ~~The `Idempotency-Key` header behaves identically to the body field~~ —
+done, `IdempotencyKeyHeaderHttpTest.headerAloneSatisfiesIdempotency`
 
 ---
 
@@ -198,6 +206,21 @@ server that ignores the tenant's timezone
 - Purchase orders: draft → submit → receive (partial deliveries supported)
 - `GoodsReceiptService` posting `purchase_receipt` movements
 - Lead time observations recorded on every receipt
+
+**Still owed by M5**
+- ~~Purchase orders: draft → submit → read → list~~ — done, step 1.
+`PurchaseOrderHttpTest`.
+- ~~Goods receipt through `StockLedgerService`, partial deliveries
+accumulating correctly~~ — done, step 2. `GoodsReceiptHttpTest`.
+- **`Idempotency-Key` on `POST /purchase-orders/{poId}/receipts`.** The
+contract declares the header on this endpoint (same as it did on
+`POST /sales` before M4 closed that gap), and it is currently not read at
+all — unlike sales, `ReceiptRequest` has no body-level idempotency field
+either, so this endpoint has **no** idempotency protection today, not a
+partial one. A receipt retried after a dropped connection — the exact
+scenario the header exists for — would double-credit stock and double-count
+the lead-time observation. Flagged rather than silently shipped: this is a
+real bug waiting for a flaky link, not a hypothetical gap.
 
 **Done when**
 - A partial receipt moves the PO to `partial` and leaves the right outstanding qty
