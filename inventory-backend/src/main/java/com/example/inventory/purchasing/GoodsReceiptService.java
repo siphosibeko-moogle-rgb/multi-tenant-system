@@ -99,10 +99,12 @@ public class GoodsReceiptService {
 
             boolean allReceived = allLinesFullyReceived(poId);
             if (allReceived) {
+                var receivedAtTimestamp = java.sql.Timestamp.from(receivedAt.toInstant());
                 jdbc.update("""
                         UPDATE purchase_orders SET status = 'received', received_at = ?
                         WHERE id = ?
-                        """, java.sql.Timestamp.from(receivedAt.toInstant()), poId);
+                        """, receivedAtTimestamp, poId);
+                recordLeadTimeObservation(poId, receivedAtTimestamp);
             } else {
                 jdbc.update("UPDATE purchase_orders SET status = 'partial' WHERE id = ?", poId);
             }
@@ -177,6 +179,62 @@ public class GoodsReceiptService {
                     WHERE purchase_order_id = ? AND quantity_received < quantity_ordered
                 )
                 """, Boolean.class, poId));
+    }
+
+    /**
+     * Records exactly one observation per fully-received purchase order,
+     * written the moment it closes — never on a partial receipt.
+     *
+     * <h2>Why the FINAL receipt, not the first partial one</h2>
+     *
+     * <p>This is the design decision the whole milestone exists to get
+     * right, so it is argued here rather than just implemented.
+     *
+     * <p>The reorder-point formula this feeds
+     * ({@code docs/adr/forecasting.md} §1) uses lead time to size the buffer
+     * that has to last from the moment an order is placed until the shop can
+     * count on having what it ordered. That is answered by "when did the
+     * ORDER finish", not "when did stock first start trickling in" — a
+     * supplier who reliably ships 70% within two days and the remaining 30%
+     * three weeks later has a 3-week lead time for planning purposes, even
+     * though something arrived on day two. Measuring from the first partial
+     * receipt would report that supplier as fast, and a reorder point sized
+     * on that number would run out of stock waiting for the tail of every
+     * order.
+     *
+     * <p>This is the same failure shape the ADR names for the promised
+     * figure ({@code docs/adr/forecasting.md} §2: "promised lead times are
+     * optimistic, measured ones are not") — measuring from the first partial
+     * receipt would make the OBSERVED figure optimistic too, for exactly the
+     * suppliers where the distinction matters most: the ones who ship in
+     * batches.
+     *
+     * <h2>Why exactly one row, not one per receipt call</h2>
+     *
+     * <p>{@code supplier_lead_time_observations} is meant to hold independent
+     * measurements of "how long did an order take" — that is what
+     * {@code averageDays} and {@code stddevDays} are averaged and spread
+     * over, and what {@code sampleSize} counts (this same reasoning is why
+     * M5's "Done when" and the ADR's §2 threshold both count in units of
+     * *orders* — "three receipts", "5 recorded observations" — not receipt
+     * events). A PO closed across three partial deliveries is ONE order
+     * cycle, not three; recording an observation on every receipt would
+     * inflate {@code sampleSize} with rows that are not independent
+     * measurements — they would all share the same {@code ordered_at} and
+     * converge toward the same {@code received_at} as the order approaches
+     * completion — which would understate variance and overstate confidence
+     * in exactly the way {@code docs/adr/forecasting.md} §2 warns against
+     * for a low sample count.
+     */
+    private void recordLeadTimeObservation(UUID poId, java.sql.Timestamp receivedAtTimestamp) {
+        jdbc.update("""
+                INSERT INTO supplier_lead_time_observations
+                    (tenant_id, supplier_id, purchase_order_id, ordered_at, received_at, lead_time_days)
+                SELECT current_tenant_id(), po.supplier_id, po.id, po.ordered_at, ?,
+                       ROUND((EXTRACT(EPOCH FROM (? - po.ordered_at)) / 86400.0)::numeric, 2)
+                FROM purchase_orders po
+                WHERE po.id = ?
+                """, receivedAtTimestamp, receivedAtTimestamp, poId);
     }
 
     private String currentStatus(UUID poId) {

@@ -212,6 +212,8 @@ done, `IdempotencyKeyHeaderHttpTest.headerAloneSatisfiesIdempotency`
 `PurchaseOrderHttpTest`.
 - ~~Goods receipt through `StockLedgerService`, partial deliveries
 accumulating correctly~~ — done, step 2. `GoodsReceiptHttpTest`.
+- ~~Lead time observations recorded on every receipt~~ — done, step 3, timed
+from the FINAL receipt that closes the PO (§ below). `LeadTimeObservationHttpTest`.
 - **`Idempotency-Key` on `POST /purchase-orders/{poId}/receipts`.** The
 contract declares the header on this endpoint (same as it did on
 `POST /sales` before M4 closed that gap), and it is currently not read at
@@ -231,6 +233,45 @@ this proves the pipeline populates correctly. It is a lower bar than the one
 M7 needs to actually *trust* the average for a reorder point; see
 `docs/adr/forecasting.md` §2 for why those are different numbers (3 vs. 5) on
 purpose.
+- Verified: `LeadTimeObservationHttpTest` — a single receipt against a fresh
+supplier leaves `observedLeadTime.sampleSize: 1` and `averageDays` equal to
+the real ordered→received gap, queried over `GET /suppliers/{supplierId}`,
+not incidentally through a broader assertion; a PO closed across two partial
+receipts records exactly **one** observation, timed from the FINAL receipt
+(§ below); three receipts from one supplier average to the real figure,
+distinct from the promised `leadTimeDays` on the same supplier row.
+
+**Which timestamp is "received," for a PO closed across several partial
+deliveries — decided in step 3, not left implicit**
+
+The FINAL receipt — the one that closes the PO to `received` — not the first
+partial one. Argued in full in `GoodsReceiptService.recordLeadTimeObservation`'s
+Javadoc; in short: the reorder-point formula sizes a buffer that has to last
+until the shop can count on having what it ordered, not until *something*
+arrives, so a supplier who ships 70% in two days and the remaining 30% three
+weeks later has a 3-week lead time for planning purposes. Measuring from the
+first partial receipt would report that supplier as fast and undersize the
+buffer for exactly the suppliers where batch shipping makes the distinction
+matter. Exactly one observation is recorded per fully-received PO — not one
+per receipt call — for the same reason `docs/adr/forecasting.md` §2's sample
+count is in units of orders, not events: three partial receipts of one PO are
+not three independent measurements of lead time.
+
+**Is the ADR's n≥5 threshold reachable in realistic time? — flagged, not
+silently implemented**
+
+For a supplier ordered from weekly, yes — 5 observations in ~5 weeks, well
+inside the ADR's own "reachable within weeks" framing. For a supplier ordered
+from **monthly**, no: 5 observations is **5 months**. That is a long time for
+a new supplier relationship to keep leaning on the promised, optimistic
+`leadTimeDays` instead of a measured one — most of a business's first two
+quarters with that supplier. The fallback means this is a degraded-confidence
+period, not a missing-reorder-point one (§2's fallback to the promised figure
+still produces a number), but "degraded for 5 months" is worth someone
+deciding is acceptable rather than discovering by accident. Not resolved here
+— lowering the threshold, weighting recent observations more, or accepting
+the wait are all real options and picking one is a forecasting-design
+decision for whoever takes up M7, not an M5 implementation detail.
 
 ---
 
