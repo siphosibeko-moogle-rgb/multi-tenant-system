@@ -369,7 +369,7 @@ public class SaleService {
                                    discount_amount, sold_at, created_by, client_request_id)
                 VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?)
                 """,
-                saleId, tenantId, locationId, nextSaleNumber(), request.customerName(),
+                saleId, tenantId, locationId, nextSaleNumber(tenantId), request.customerName(),
                 request.customerPhone(), request.paymentMethod(), saleDiscount,
                 java.sql.Timestamp.from(soldAt.toInstant()), actor, request.clientRequestId());
 
@@ -416,16 +416,36 @@ public class SaleService {
     }
 
     /**
-     * A receipt number that is unique within the tenant.
+     * A receipt number that is unique within the tenant, and sequential —
+     * something a cashier can read out over the phone, unlike the
+     * time-plus-random placeholder this replaces.
      *
-     * <p>Minimal on purpose: M4 owns real sale numbering (per-tenant sequences,
-     * a human-friendly format, gap behaviour). This is time-based with a random
-     * suffix so it satisfies the {@code (tenant_id, sale_number)} unique
-     * constraint without pretending to be the final scheme.
+     * <h2>Why an atomic UPDATE ... RETURNING on {@code tenants}, not a Postgres
+     * SEQUENCE</h2>
+     *
+     * <p>A single {@code SEQUENCE} shared by every tenant is a global counter —
+     * exactly what V7's migration comment rejects: the gap between two of a
+     * tenant's receipt numbers estimates that tenant's sales volume to anyone
+     * who sees two receipts, and a global counter leaks that across tenants
+     * rather than containing it. One {@code SEQUENCE} per tenant would avoid
+     * the leak but means dynamic DDL every time a tenant registers, which is a
+     * heavier and stranger thing to own than a counter column already sitting
+     * on a row that exists exactly once per tenant.
+     *
+     * <p>{@code tenants.next_sale_number} plays the same role a sequence would,
+     * allocated with the same reasoning T12 gives for the ledger trigger: the
+     * row lock the UPDATE takes is what adjudicates two sales racing for a
+     * number, not a read-then-increment pre-check. Concurrent sales for the
+     * SAME tenant serialise briefly on that tenant's row; concurrent sales for
+     * DIFFERENT tenants do not contend at all, because each tenant's counter is
+     * a different row with a different lock.
      */
-    private static String nextSaleNumber() {
-        return "S-" + System.currentTimeMillis() + "-"
-                + UUID.randomUUID().toString().substring(0, 4).toUpperCase();
+    private String nextSaleNumber(UUID tenantId) {
+        long assigned = jdbc.queryForObject("""
+                UPDATE tenants SET next_sale_number = next_sale_number + 1
+                WHERE id = ? RETURNING next_sale_number - 1
+                """, Long.class, tenantId);
+        return "S-%06d".formatted(assigned);
     }
 
     private record ProductPricing(BigDecimal sellingPrice, BigDecimal costPrice, BigDecimal taxRate) {
