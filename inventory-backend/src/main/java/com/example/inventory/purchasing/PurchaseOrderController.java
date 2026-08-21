@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.example.inventory.purchasing.PurchaseOrderDtos.PurchaseOrderDetail;
 import com.example.inventory.purchasing.PurchaseOrderDtos.PurchaseOrderPage;
 import com.example.inventory.purchasing.PurchaseOrderDtos.PurchaseOrderWriteRequest;
+import com.example.inventory.purchasing.PurchaseOrderDtos.ReceiptRequest;
 import com.example.inventory.web.NotFoundException;
 
 import jakarta.validation.Valid;
@@ -44,9 +45,11 @@ import jakarta.validation.Valid;
 public class PurchaseOrderController {
 
     private final PurchaseOrderService purchaseOrders;
+    private final GoodsReceiptService receipts;
 
-    public PurchaseOrderController(PurchaseOrderService purchaseOrders) {
+    public PurchaseOrderController(PurchaseOrderService purchaseOrders, GoodsReceiptService receipts) {
         this.purchaseOrders = purchaseOrders;
+        this.receipts = receipts;
     }
 
     @GetMapping
@@ -80,5 +83,19 @@ public class PurchaseOrderController {
     @PreAuthorize("hasAnyRole('owner', 'manager')")
     ResponseEntity<PurchaseOrderDetail> submit(@PathVariable UUID poId) {
         return ResponseEntity.ok(purchaseOrders.submit(poId));
+    }
+
+    /**
+     * Receives stock against the order, in part or in full — the contract's
+     * "supports partial deliveries". {@code owner}, {@code manager} AND
+     * {@code clerk}: the contract's {@code UserRole} table names "receive
+     * stock" as explicitly clerk's job, unlike deciding what to order or
+     * submitting the order, which stay owner/manager above.
+     */
+    @PostMapping("/{poId}/receipts")
+    @PreAuthorize("hasAnyRole('owner', 'manager', 'clerk')")
+    ResponseEntity<PurchaseOrderDetail> receive(@PathVariable UUID poId,
+                                                @Valid @RequestBody ReceiptRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(receipts.receive(poId, request));
     }
 }

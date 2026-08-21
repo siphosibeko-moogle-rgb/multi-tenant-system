@@ -92,4 +92,23 @@ public final class PurchaseOrderDtos {
 
     public record PurchaseOrderPage(List<PurchaseOrder> items, String nextCursor) {
     }
+
+    /**
+     * Body of {@code POST /purchase-orders/{poId}/receipts}.
+     *
+     * @param receivedAt omit to use now. Business time, same reasoning as
+     *                   {@code SaleWriteRequest.soldAt} — a receipt may be
+     *                   recorded after the fact.
+     */
+    public record ReceiptRequest(
+            OffsetDateTime receivedAt,
+            @NotEmpty @Valid List<ReceiptLine> lines) {
+    }
+
+    /** @param unitCost omit to use the price the line was ordered at */
+    public record ReceiptLine(
+            @NotNull UUID productId,
+            @NotNull @Positive BigDecimal quantityReceived,
+            @PositiveOrZero BigDecimal unitCost) {
+    }
 }
