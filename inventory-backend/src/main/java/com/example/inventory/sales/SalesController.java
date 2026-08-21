@@ -1,21 +1,26 @@
 package com.example.inventory.sales;
 
+import java.time.LocalDate;
 import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.example.inventory.sales.SalesDtos.SaleDetail;
+import com.example.inventory.sales.SalesDtos.SalePage;
 import com.example.inventory.sales.SalesDtos.VoidRequest;
 import com.example.inventory.sales.SalesDtos.ReturnRequest;
 import com.example.inventory.sales.SalesDtos.SaleWriteRequest;
+import com.example.inventory.web.NotFoundException;
 
 import jakarta.validation.Valid;
 
@@ -23,7 +28,7 @@ import jakarta.validation.Valid;
  * {@code POST /sales} — the one sales endpoint M3 needs.
  *
  * <p>Pulled forward from M4 so the Android slice has something real to record a
- * sale against. Listing ({@code GET /sales}) stays in M4.
+ * sale against.
  *
  * <h2>Role gate</h2>
  *
@@ -49,6 +54,31 @@ public class SalesController {
 
     public SalesController(SaleService sales) {
         this.sales = sales;
+    }
+
+    /**
+     * Read access is every role, including {@code viewer} — the contract's
+     * {@code UserRole} table gives viewer "read only", which means exactly
+     * this: seeing sales without being able to record, void or return one.
+     * A token with no {@code role} claim at all is still refused, same as
+     * every other gated endpoint.
+     */
+    @GetMapping
+    @PreAuthorize("hasAnyRole('owner', 'manager', 'clerk', 'viewer')")
+    ResponseEntity<SalePage> list(@RequestParam(required = false) String cursor,
+                                  @RequestParam(required = false) Integer limit,
+                                  @RequestParam(required = false) LocalDate from,
+                                  @RequestParam(required = false) LocalDate to,
+                                  @RequestParam(required = false) String status) {
+        return ResponseEntity.ok(sales.list(cursor, limit, from, to, status));
+    }
+
+    @GetMapping("/{saleId}")
+    @PreAuthorize("hasAnyRole('owner', 'manager', 'clerk', 'viewer')")
+    ResponseEntity<SaleDetail> get(@PathVariable UUID saleId) {
+        return sales.read(saleId)
+                .map(ResponseEntity::ok)
+                .orElseThrow(() -> new NotFoundException("No such sale"));
     }
 
     /**

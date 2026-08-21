@@ -2,7 +2,9 @@ package com.example.inventory.sales;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -56,6 +58,10 @@ import com.example.inventory.web.NotFoundException;
  */
 @Service
 public class SaleService {
+
+    /** Matches the contract's {@code Limit} parameter: default 50, max 200. */
+    private static final int DEFAULT_LIMIT = 50;
+    private static final int MAX_LIMIT = 200;
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
@@ -505,6 +511,118 @@ public class SaleService {
                         (rs, i) -> rs.getObject("id", UUID.class), clientRequestId)
                 .stream().findFirst()
                 .flatMap(this::read);
+    }
+
+    /**
+     * Keyset pagination on {@code (sold_at, id)}, most recent first — the same
+     * two-column reasoning as {@code UserDirectory.list}: {@code sold_at} alone
+     * is not unique (two sales landing in the same request-handling millisecond
+     * would share it), and a cursor on a non-unique key silently drops or
+     * repeats whichever sale straddles a page boundary.
+     *
+     * <p>{@code from}/{@code to} are UTC calendar-day boundaries. M3 already
+     * established that a sale's own business day is the TENANT's timezone, not
+     * UTC ({@code SaleTest.aLateNightSaleLandsOnTheTenantsBusinessDay}); this
+     * filter does not yet make that same correction, so a sale near midnight
+     * can list one day off from where a tenant-timezone-aware report would
+     * place it. Flagged rather than silently assumed correct — the fix belongs
+     * with M8's reporting work, which already owns timezone-aware day
+     * bucketing, rather than being invented here as a side effect of listing.
+     */
+    public SalesDtos.SalePage list(String cursor, Integer limit, LocalDate from, LocalDate to,
+                                   String status) {
+        int pageSize = limit == null ? DEFAULT_LIMIT : Math.clamp(limit, 1, MAX_LIMIT);
+
+        StringBuilder sql = new StringBuilder("""
+                SELECT s.id, s.sale_number, s.status::text AS status, s.customer_name,
+                       (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS item_count,
+                       s.subtotal_amount, s.discount_amount, s.tax_amount, s.total_amount,
+                       s.payment_method, s.sold_at
+                FROM sales s
+                WHERE 1 = 1
+                """);
+        var args = new java.util.ArrayList<Object>();
+
+        if (status != null && !status.isBlank()) {
+            sql.append(" AND s.status = ?::sale_status");
+            args.add(status);
+        }
+        if (from != null) {
+            sql.append(" AND s.sold_at >= ?");
+            args.add(java.sql.Timestamp.from(from.atStartOfDay(ZoneOffset.UTC).toInstant()));
+        }
+        if (to != null) {
+            sql.append(" AND s.sold_at < ?");
+            args.add(java.sql.Timestamp.from(to.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant()));
+        }
+        ListCursor decoded = ListCursor.decode(cursor);
+        if (decoded != null) {
+            sql.append(" AND (s.sold_at, s.id) < (?, ?)");
+            args.add(java.sql.Timestamp.from(decoded.soldAt().toInstant()));
+            args.add(decoded.id());
+        }
+        // Descending: most recent sale first, and one more row than asked for
+        // so "is there a next page?" needs no separate count.
+        sql.append(" ORDER BY s.sold_at DESC, s.id DESC LIMIT ").append(pageSize + 1);
+
+        List<SalesDtos.Sale> rows = jdbc.query(sql.toString(), (rs, i) -> new SalesDtos.Sale(
+                rs.getObject("id", UUID.class),
+                rs.getString("sale_number"),
+                rs.getString("status"),
+                rs.getString("customer_name"),
+                rs.getInt("item_count"),
+                rs.getBigDecimal("subtotal_amount"),
+                rs.getBigDecimal("discount_amount"),
+                rs.getBigDecimal("tax_amount"),
+                rs.getBigDecimal("total_amount"),
+                rs.getString("payment_method"),
+                rs.getObject("sold_at", OffsetDateTime.class)), args.toArray());
+
+        boolean hasMore = rows.size() > pageSize;
+        List<SalesDtos.Sale> page = hasMore ? rows.subList(0, pageSize) : rows;
+
+        String nextCursor = hasMore && !page.isEmpty()
+                ? new ListCursor(page.get(page.size() - 1).soldAt(), page.get(page.size() - 1).id())
+                        .encode()
+                : null;
+
+        return new SalesDtos.SalePage(page, nextCursor);
+    }
+
+    /**
+     * An opaque page cursor for {@link #list}. Base64 of the sort key, same
+     * shape and same reasoning as {@code UserDirectory}'s private {@code
+     * Cursor}: a client that parses it will be broken by any change to the
+     * ordering, so it is encoded rather than handed over as a readable
+     * timestamp. Named {@code ListCursor} rather than {@code Cursor} only to
+     * avoid colliding with any future top-level type of that name in this
+     * package.
+     */
+    private record ListCursor(OffsetDateTime soldAt, UUID id) {
+
+        String encode() {
+            return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    (soldAt + "|" + id).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+
+        static ListCursor decode(String encoded) {
+            if (encoded == null || encoded.isBlank()) {
+                return null;
+            }
+            try {
+                String raw = new String(java.util.Base64.getUrlDecoder().decode(encoded),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                int split = raw.lastIndexOf('|');
+                return new ListCursor(
+                        OffsetDateTime.parse(raw.substring(0, split)),
+                        UUID.fromString(raw.substring(split + 1)));
+            } catch (RuntimeException e) {
+                // A cursor is server-issued. One that does not decode was made
+                // up, and starting from the beginning is friendlier than a 500
+                // while leaking nothing.
+                return null;
+            }
+        }
     }
 
     public Optional<SaleDetail> read(UUID saleId) {

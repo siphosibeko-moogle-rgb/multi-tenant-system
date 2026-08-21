@@ -113,4 +113,22 @@ public final class SalesDtos {
             UUID createdBy,
             List<SaleLine> lines) {
     }
+
+    /** {@code GET /sales} row shape — the contract's lighter {@code Sale}, no lines. */
+    public record Sale(
+            UUID id,
+            String saleNumber,
+            String status,
+            String customerName,
+            int itemCount,
+            BigDecimal subtotalAmount,
+            BigDecimal discountAmount,
+            BigDecimal taxAmount,
+            BigDecimal totalAmount,
+            String paymentMethod,
+            OffsetDateTime soldAt) {
+    }
+
+    public record SalePage(List<Sale> items, String nextCursor) {
+    }
 }
