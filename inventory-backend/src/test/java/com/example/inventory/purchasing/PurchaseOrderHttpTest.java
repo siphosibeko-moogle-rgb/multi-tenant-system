@@ -154,4 +154,32 @@ class PurchaseOrderHttpTest extends AbstractIntegrationTest {
 
         assertThat(r.status()).as(r.body()).isEqualTo(404);
     }
+
+    @Test
+    @DisplayName("fromRecommendationIds absent, empty, or naming ids that don't exist yet is a no-op")
+    void fromRecommendationIdsIsANoOpAheadOfM7() {
+        // Absent entirely — the common case today, since nothing produces a
+        // recommendation until M7.
+        var absent = http().postWithToken("/purchase-orders", """
+                {"supplierId":"%s","lines":[{"productId":"%s","quantityOrdered":1,"unitCost":9.00}]}
+                """.formatted(supplierId, productId), token());
+        assertThat(absent.status()).as(absent.body()).isEqualTo(201);
+
+        // Explicitly empty.
+        var empty = http().postWithToken("/purchase-orders", """
+                {"supplierId":"%s","fromRecommendationIds":[],
+                 "lines":[{"productId":"%s","quantityOrdered":1,"unitCost":9.00}]}
+                """.formatted(supplierId, productId), token());
+        assertThat(empty.status()).as(empty.body()).isEqualTo(201);
+
+        // Naming an id that does not exist. The UPDATE this triggers affects
+        // zero rows — the point of the test is that "zero rows updated" is
+        // not treated as an error, the same way an ordinary UPDATE with no
+        // matching WHERE isn't.
+        var unknownId = http().postWithToken("/purchase-orders", """
+                {"supplierId":"%s","fromRecommendationIds":["%s"],
+                 "lines":[{"productId":"%s","quantityOrdered":1,"unitCost":9.00}]}
+                """.formatted(supplierId, UUID.randomUUID(), productId), token());
+        assertThat(unknownId.status()).as(unknownId.body()).isEqualTo(201);
+    }
 }
