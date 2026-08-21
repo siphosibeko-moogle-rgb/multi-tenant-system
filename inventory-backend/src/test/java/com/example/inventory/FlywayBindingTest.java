@@ -147,9 +147,10 @@ class FlywayBindingTest {
         // flyway_schema_history would shrink to match whatever it found,
         // including a migration that silently failed to apply, and would agree
         // with the bug instead of catching it. Same reasoning as T11's tables.
-        // V5 (sale_returns), V6 (partially_refunded_status) and V7
-        // (sale_numbering) added with the migrations that introduced them.
-        assertThat(versions).containsExactly("1", "2", "3", "4", "5", "6", "7");
+        // V5 (sale_returns), V6 (partially_refunded_status), V7
+        // (sale_numbering) and V8 (po_numbering) added with the migrations
+        // that introduced them.
+        assertThat(versions).containsExactly("1", "2", "3", "4", "5", "6", "7", "8");
     }
 
     @Test
