@@ -74,12 +74,38 @@ public class SaleService {
     }
 
     public Recorded record(SaleWriteRequest request) {
+        return record(request, (UUID) null);
+    }
+
+    /**
+     * @param idempotencyKeyHeader the {@code Idempotency-Key} header, already
+     *                             parsed to a UUID by Spring (an unparsable
+     *                             header never reaches here — see
+     *                             {@code SalesController}). May be null.
+     *
+     *                             <h2>Precedence when both are present and differ</h2>
+     *
+     *                             <p>{@code request.clientRequestId()} wins.
+     *                             It is the value this system has always used —
+     *                             generated when the user taps save, per the
+     *                             Javadoc on {@link SalesDtos.SaleWriteRequest}
+     *                             — and every existing idempotency guarantee
+     *                             (the replay tests, the unique index) is
+     *                             built around it. The header is consulted
+     *                             only when the body omits the field, so a
+     *                             caller already sending the body key sees no
+     *                             behaviour change at all, and a caller using
+     *                             only the header gets the same guarantee.
+     */
+    public Recorded record(SaleWriteRequest request, UUID idempotencyKeyHeader) {
         UUID tenantId = TenantContext.currentTenantId()
                 .orElseThrow(() -> new IllegalStateException("no tenant bound"));
         UUID actor = TenantContext.currentUserId().orElse(null);
+        UUID idempotencyKey = request.clientRequestId() != null
+                ? request.clientRequestId() : idempotencyKeyHeader;
 
-        if (request.clientRequestId() != null) {
-            Optional<SaleDetail> existing = findByClientRequestId(request.clientRequestId());
+        if (idempotencyKey != null) {
+            Optional<SaleDetail> existing = findByClientRequestId(idempotencyKey);
             if (existing.isPresent()) {
                 return new Recorded(existing.get(), true);
             }
@@ -93,14 +119,15 @@ public class SaleService {
             // 409 with `available` null, which is precisely the number the
             // cashier needs.
             return new Recorded(ledger.withAvailableFilledIn(
-                    () -> transactions.execute(status -> insertSale(tenantId, actor, request))),
+                    () -> transactions.execute(status ->
+                            insertSale(tenantId, actor, request, idempotencyKey))),
                     false);
         } catch (DuplicateKeyException e) {
             // Lost the race against a concurrent replay of the same
-            // clientRequestId. The winner's sale is the answer; ours rolled back,
-            // so stock moved exactly once.
-            if (request.clientRequestId() != null) {
-                return new Recorded(findByClientRequestId(request.clientRequestId())
+            // idempotency key. The winner's sale is the answer; ours rolled
+            // back, so stock moved exactly once.
+            if (idempotencyKey != null) {
+                return new Recorded(findByClientRequestId(idempotencyKey)
                         .orElseThrow(() -> e), true);
             }
             throw e;
@@ -341,7 +368,8 @@ public class SaleService {
                 "SELECT location_id FROM sales WHERE id = ?", UUID.class, saleId);
     }
 
-    private SaleDetail insertSale(UUID tenantId, UUID actor, SaleWriteRequest request) {
+    private SaleDetail insertSale(UUID tenantId, UUID actor, SaleWriteRequest request,
+                                  UUID idempotencyKey) {
         UUID locationId = request.locationId() != null
                 ? request.locationId()
                 : defaultLocationId().orElseThrow(() -> new ConflictException(
@@ -371,7 +399,7 @@ public class SaleService {
                 """,
                 saleId, tenantId, locationId, nextSaleNumber(tenantId), request.customerName(),
                 request.customerPhone(), request.paymentMethod(), saleDiscount,
-                java.sql.Timestamp.from(soldAt.toInstant()), actor, request.clientRequestId());
+                java.sql.Timestamp.from(soldAt.toInstant()), actor, idempotencyKey);
 
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal tax = BigDecimal.ZERO;

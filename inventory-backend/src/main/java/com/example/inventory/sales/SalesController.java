@@ -8,6 +8,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -50,10 +51,23 @@ public class SalesController {
         this.sales = sales;
     }
 
+    /**
+     * @param idempotencyKey the {@code Idempotency-Key} header. Declared as
+     *                       {@code UUID} rather than {@code String} so Spring's
+     *                       own converter rejects a malformed value before this
+     *                       method runs — the existing catch-all in
+     *                       {@code GlobalExceptionHandler} already turns that
+     *                       rejection into a proper problem response, the same
+     *                       way it already does for a path variable or any
+     *                       other UUID-typed input, so nothing new was needed
+     *                       to keep this on the RFC 9457 shape (CLAUDE.md §4).
+     */
     @PostMapping
     @PreAuthorize("hasAnyRole('owner', 'manager', 'clerk')")
-    ResponseEntity<SaleDetail> record(@Valid @RequestBody SaleWriteRequest request) {
-        var recorded = sales.record(request);
+    ResponseEntity<SaleDetail> record(
+            @Valid @RequestBody SaleWriteRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) UUID idempotencyKey) {
+        var recorded = sales.record(request, idempotencyKey);
         return ResponseEntity
                 .status(recorded.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
                 .body(recorded.sale());
