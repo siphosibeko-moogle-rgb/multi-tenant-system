@@ -142,15 +142,23 @@ public class TenantSeeder {
             UUID deadId = createProduct(slug + "-dead", "Discontinued Fruitcake", categoryId);
             UUID newId = createProduct(slug + "-new", "Brand New Sourdough", categoryId);
 
+            UUID supplierId = createSupplier(tenantId, "Golden Wheat Supplies " + slug, 7);
+
             seedSteadySeller(steadyId, locationId, windowStart, today, new Random(rng.nextLong()));
             seedIntermittentSeller(intermittentId, locationId, windowStart, today, new Random(rng.nextLong()));
-            seedStockoutProduct(stockoutId, locationId, windowStart, today, new Random(rng.nextLong()));
+            seedStockoutProduct(stockoutId, supplierId, locationId, windowStart, today, new Random(rng.nextLong()));
             seedTrendingProduct(trendingId, locationId, windowStart, today, new Random(rng.nextLong()));
             seedDeadStock(deadId, locationId, windowStart);
             seedBrandNew(newId, locationId, today, new Random(rng.nextLong()));
 
-            UUID supplierId = createSupplier(tenantId, "Golden Wheat Supplies " + slug, 7);
-            seedSupplierHistory(supplierId, locationId, List.of(steadyId, trendingId),
+            // "At least one purchase order per major product": the stockout
+            // product's own restock above already went through a real PO
+            // (the only sensible place for it — any date this method chose
+            // independently risks landing inside that product's own
+            // scripted empty-shelf window). Steady, intermittent and
+            // trending get their PO history here, since none of them have a
+            // narrative-sensitive stock timing to collide with.
+            seedSupplierHistory(supplierId, locationId, List.of(steadyId, intermittentId, trendingId),
                     windowStart, today, new Random(rng.nextLong()));
 
             Map<String, UUID> shapes = new LinkedHashMap<>();
@@ -262,7 +270,8 @@ public class TenantSeeder {
      * zero stock LEVEL without an actual refused sale cannot be told apart
      * from ordinary dead stock.
      */
-    void seedStockoutProduct(UUID productId, UUID locationId, LocalDate start, LocalDate endExclusive, Random rng) {
+    void seedStockoutProduct(UUID productId, UUID supplierId, UUID locationId, LocalDate start,
+                             LocalDate endExclusive, Random rng) {
         long totalDays = ChronoUnit.DAYS.between(start, endExclusive);
         LocalDate stockoutStart = start.plusDays(totalDays * 4 / 10); // roughly 40% into the window
 
@@ -303,11 +312,17 @@ public class TenantSeeder {
             }
         }
 
-        // Restock, and resume a lighter baseline for the rest of the window
-        // so there is a genuine "before and after" to compare the outage
-        // against.
+        // Restock through a REAL purchase order — the natural, realistic
+        // trigger for a restock is exactly "we just ran out" — and resume a
+        // lighter baseline for the rest of the window so there is a genuine
+        // "before and after" to compare the outage against. This is this
+        // product's contribution to "at least one PO per major product":
+        // the only sensible place for it, since any date this method chose
+        // independently for a SEPARATE PO would risk landing inside its own
+        // scripted empty-shelf window above.
         LocalDate restockDate = stockoutStart.plusDays(stockoutDays);
-        stockUp(productId, locationId, restockDate, new BigDecimal(35), new BigDecimal("7.00"));
+        orderAndReceive(supplierId, locationId, productId, new BigDecimal(35), new BigDecimal("7.00"),
+                restockDate.minusDays(4), 4);
         for (LocalDate d = restockDate.plusDays(1); d.isBefore(endExclusive); d = d.plusDays(1)) {
             if (rng.nextDouble() < 0.5) {
                 sellUpTo(productId, locationId, d, 2 + rng.nextInt(2));
@@ -328,10 +343,10 @@ public class TenantSeeder {
     // ------------------------------------------------------------------
 
     /**
-     * One supplier used by two products' worth of restocking, receiving 6
-     * separate purchase orders spread across the window — above the ADR's
-     * n>=5 threshold (§2), so {@code observedLeadTime} is populated with a
-     * real sample size once queried, not just a lone row.
+     * One supplier used by several products' worth of restocking, receiving
+     * (with {@link #seedStockoutProduct}'s own restock) well above the ADR's
+     * n>=5 trust threshold (§2), so {@code observedLeadTime} is populated
+     * with a real sample size once queried, not just a lone row.
      */
     void seedSupplierHistory(UUID supplierId, UUID locationId, List<UUID> productIds,
                              LocalDate windowStart, LocalDate today, Random rng) {
@@ -342,25 +357,37 @@ public class TenantSeeder {
             UUID productId = productIds.get(i % productIds.size());
             LocalDate orderedDate = windowStart.plusDays(totalDays * i / receiptCount);
             int leadDays = 3 + rng.nextInt(6); // 3..8 — real variance, not a constant
-            OffsetDateTime orderedAt = orderedDate.atTime(9, 0).atOffset(ZoneOffset.UTC);
-            OffsetDateTime receivedAt = orderedAt.plusDays(leadDays);
             BigDecimal quantity = new BigDecimal(40 + rng.nextInt(20));
-            BigDecimal unitCost = new BigDecimal("8.00");
-
-            var created = purchaseOrders.create(new PurchaseOrderWriteRequest(
-                    supplierId, locationId, null, "Seed restock", null,
-                    List.of(new PurchaseOrderLineRequest(productId, quantity, unitCost))));
-            UUID poId = created.id();
-
-            purchaseOrders.submit(poId);
-            // See the class Javadoc: the one timestamp this generator patches
-            // directly, and why.
-            jdbc.update("UPDATE purchase_orders SET ordered_at = ? WHERE id = ?",
-                    java.sql.Timestamp.from(orderedAt.toInstant()), poId);
-
-            goodsReceipts.receive(poId, new ReceiptRequest(receivedAt,
-                    List.of(new ReceiptLine(productId, quantity, unitCost))));
+            orderAndReceive(supplierId, locationId, productId, quantity, new BigDecimal("8.00"),
+                    orderedDate, leadDays);
         }
+    }
+
+    /**
+     * One full order → receive cycle for one product, through the real
+     * services (T5-equivalent for purchasing: {@code PurchaseOrderService}
+     * and {@code GoodsReceiptService} are the only classes that touch
+     * {@code purchase_orders}/{@code purchase_order_items}). {@code
+     * orderedDate} places the order historically by patching {@code
+     * ordered_at} after the real {@code submit()} call — see the class
+     * Javadoc for why that one column is the exception.
+     */
+    private void orderAndReceive(UUID supplierId, UUID locationId, UUID productId, BigDecimal quantity,
+                                 BigDecimal unitCost, LocalDate orderedDate, int leadDays) {
+        OffsetDateTime orderedAt = orderedDate.atTime(9, 0).atOffset(ZoneOffset.UTC);
+        OffsetDateTime receivedAt = orderedAt.plusDays(leadDays);
+
+        var created = purchaseOrders.create(new PurchaseOrderWriteRequest(
+                supplierId, locationId, null, "Seed restock", null,
+                List.of(new PurchaseOrderLineRequest(productId, quantity, unitCost))));
+        UUID poId = created.id();
+
+        purchaseOrders.submit(poId);
+        jdbc.update("UPDATE purchase_orders SET ordered_at = ? WHERE id = ?",
+                java.sql.Timestamp.from(orderedAt.toInstant()), poId);
+
+        goodsReceipts.receive(poId, new ReceiptRequest(receivedAt,
+                List.of(new ReceiptLine(productId, quantity, unitCost))));
     }
 
     /**

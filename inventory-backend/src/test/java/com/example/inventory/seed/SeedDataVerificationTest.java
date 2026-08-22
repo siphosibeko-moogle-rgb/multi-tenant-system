@@ -5,6 +5,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -173,6 +174,19 @@ class SeedDataVerificationTest extends AbstractIntegrationTest {
         assertThat(averageDays).as("a plausible lead time, not null and not zero")
                 .isNotNull();
         assertThat(averageDays.signum()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("each major product has at least one purchase order, not just sales")
+    void majorProductsHaveAPurchaseOrder() {
+        for (String shape : List.of("steady", "intermittent", "stockout", "trending")) {
+            UUID productId = tenantA.productIdsByShape().get(shape);
+            Long poLineCount = asOwner("""
+                    SELECT count(*) FROM purchase_order_items WHERE product_id = ?
+                    """, Long.class, productId);
+            assertThat(poLineCount).as("%s must have gone through a real PO, not only sales", shape)
+                    .isGreaterThan(0L);
+        }
     }
 
     @Test
