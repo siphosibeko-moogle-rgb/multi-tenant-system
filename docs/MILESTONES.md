@@ -302,17 +302,75 @@ window; it stays `insufficient_data` forever and that's the point (§5)
 - **brand-new, under 2 weeks of history** — fails the readiness threshold
 outright
 
+**Command**
+
+```bash
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local,seed
+```
+
+`local` for the datasource, same as an ordinary run; `seed` activates
+`SeedDataRunner`, the only `@Profile` guard in this codebase's `main`
+sources. Generates ~7 months of history (`SeedDataRunner.WINDOW_WEEKS = 30`)
+for two brand-new tenants, logs their ids/products/an owner login for each,
+and exits — nothing is idempotent here, re-running mints two more tenants
+rather than updating the last pair. Drop and recreate the local database
+(`docker compose down -v && docker compose up -d db`) for a clean slate.
+
+Built as `com.example.inventory.seed.TenantSeeder`, a plain (non-gated)
+`@Component` that `SeedDataRunner` calls twice — through the real services
+(`TenantRegistrationService`, `ProductCatalog`, `SaleService`,
+`StockLedgerService`'s adjustment path, `PurchaseOrderService`,
+`GoodsReceiptService`), never a raw `INSERT` into a transactional table, with
+two documented exceptions: suppliers (M5 built `GET /suppliers/{id}` only,
+so there is no real mechanism to seed one through) and a purchase order's
+`ordered_at` (`submit()` always stamps the real current instant by design —
+see M5 — so backdating it for historical placement is a one-column `UPDATE`
+after the real `submit()` call, not instead of it). Both are flagged in the
+class's own Javadoc.
+
 **Done when**
-- One command populates two tenants with distinct, realistic histories
-- `demand_daily` includes zero-demand days — verify this explicitly, it is the
-single most common forecasting bug
-- The stockout-period product shows visibly lower recorded sales during its
-`had_stockout` window than its surrounding baseline, so there is something
-real for the M7 exclusion to exclude
-- The intermittent product's history is seeded far enough back (within the
-6–12 month window) that it eventually crosses the readiness threshold — see
-`docs/adr/forecasting.md` §5, it needs roughly 14 weeks at a 1-in-10 rate,
-noticeably longer than the steady seller
+- ~~One command populates two tenants with distinct, realistic histories~~ —
+done, `SeedDataRunner`. `SeedDataVerificationTest` runs the same generator
+at a shorter window and checks it in ~13 seconds against an isolated
+Testcontainers database.
+- **`demand_daily` includes zero-demand days — NOT verified, and it is not
+this milestone's to verify.** `demand_daily` has no populating mechanism at
+all yet: no view, no trigger, nothing. That is M7's `DemandRollupJob`, not
+built. Verified instead at the source the rollup will eventually read —
+`stock_movements` — via `SeedDataVerificationTest
+.steadySellerHasZeroAndNonZeroDemandDays`: the steady seller has sale
+movements on some but not all calendar days in its window. Once
+`DemandRollupJob` exists, re-running the rollup against this seed data and
+confirming `demand_daily` itself carries zero-demand rows belongs on M7's
+own "Done when" list, not retrofitted onto this one.
+- ~~The stockout-period product shows visibly lower recorded sales during
+its outage than its surrounding baseline~~ — done, verified one level
+lower than the criterion names for the same reason as above:
+`had_stockout` is a `demand_daily` column, so nothing can flag it yet.
+`SeedDataVerificationTest.stockoutIsGenuine` instead confirms the
+ledger-reconstructed running balance both never goes negative (T12) and
+genuinely touches zero, and that a real sale attempt during the outage was
+refused rather than skipped — the evidence `had_stockout` will be computed
+from, once something computes it.
+- ~~The intermittent product's history is seeded far enough back... that it
+eventually crosses the readiness threshold~~ — done by construction: the
+real seed run's 30-week window is more than double the ADR's ~14-week
+floor for this shape (`docs/adr/forecasting.md` §5). Not independently
+re-verified by a test beyond that arithmetic, since nothing yet computes
+readiness to check it against.
+
+**Two more, from the review that shaped this milestone:**
+- ~~At least one supplier with 5+ receipts across the window~~ — done. One
+supplier per tenant receives 6 purchase orders (`docs/adr/forecasting.md`
+§2's n≥5 trust threshold), each with independently randomised lead time
+(3–8 days), so `observedLeadTime` carries real variance, not a repeated
+constant. `SeedDataVerificationTest.supplierHasEnoughObservations`.
+- ~~At least one purchase order per major product~~ — done for the four
+actively-selling shapes (steady, intermittent, stockout, trending); dead
+stock and the brand-new product deliberately don't get one — nobody
+reorders dead stock, and "just started carrying this, stocked by hand" is
+brand-new's own realistic story. `SeedDataVerificationTest
+.majorProductsHaveAPurchaseOrder`.
 
 ---
 
@@ -367,6 +425,13 @@ reorder point at 21 promised days than the same product at 3
 - `forecast_accuracy` rows appear after the evaluation job runs, each scored
 against the naive "same as last period" baseline over the same period — not
 merely computed and left uncompared
+- **Picked up from M6, not re-derived:** running `DemandRollupJob` against
+M6's seed data (`./mvnw spring-boot:run -Dspring-boot.run.profiles=local,seed`)
+produces `demand_daily` rows with genuine zero-demand days for the steady
+seller, and `had_stockout: true` on the stockout product's outage days —
+the two criteria M6 could only verify one level lower, against
+`stock_movements` directly, because `DemandRollupJob` did not exist yet to
+check them against the table they actually name.
 
 ---
 
