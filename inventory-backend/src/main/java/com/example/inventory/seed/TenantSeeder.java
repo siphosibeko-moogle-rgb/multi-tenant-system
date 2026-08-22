@@ -1,0 +1,445 @@
+package com.example.inventory.seed;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Random;
+import java.util.UUID;
+
+import javax.sql.DataSource;
+
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Component;
+
+import com.example.inventory.auth.AuthDtos.AuthTokens;
+import com.example.inventory.auth.AuthDtos.TenantRegistrationRequest;
+import com.example.inventory.auth.TenantRegistrationService;
+import com.example.inventory.catalog.CatalogDtos.CategoryWriteRequest;
+import com.example.inventory.catalog.CatalogDtos.LocationWriteRequest;
+import com.example.inventory.catalog.CatalogDtos.ProductWriteRequest;
+import com.example.inventory.catalog.ProductCatalog;
+import com.example.inventory.inventory.InsufficientStockException;
+import com.example.inventory.inventory.StockLedgerService;
+import com.example.inventory.inventory.StockLedgerService.MovementRequest;
+import com.example.inventory.purchasing.GoodsReceiptService;
+import com.example.inventory.purchasing.PurchaseOrderDtos.PurchaseOrderLineRequest;
+import com.example.inventory.purchasing.PurchaseOrderDtos.PurchaseOrderWriteRequest;
+import com.example.inventory.purchasing.PurchaseOrderDtos.ReceiptLine;
+import com.example.inventory.purchasing.PurchaseOrderDtos.ReceiptRequest;
+import com.example.inventory.purchasing.PurchaseOrderService;
+import com.example.inventory.sales.SaleService;
+import com.example.inventory.sales.SalesDtos.SaleLineRequest;
+import com.example.inventory.sales.SalesDtos.SaleWriteRequest;
+import com.example.inventory.tenancy.TenantContext;
+
+/**
+ * M6: builds 6-12 months of realistic history for one tenant by calling the
+ * same services a real request would — {@code SaleService}, the ledger's
+ * {@code adjustment} path, {@code PurchaseOrderService},
+ * {@code GoodsReceiptService} — never a raw {@code INSERT} into a
+ * transactional table. See each {@code seedXxx} method for why a given shape
+ * is produced the way it is; the reasoning is what M7 will actually depend
+ * on, not just the resulting row counts.
+ *
+ * <p>Plain {@code @Component}, not profile-gated — {@code SeedDataRunner} is
+ * the {@code --spring.profiles.active=seed} entry point that calls this for
+ * two real tenants; this class is what {@code SeedDataVerificationTest}
+ * exercises directly, at a shorter window, so the mechanism is proven by a
+ * fast test rather than only by a slow manual run.
+ *
+ * <h2>Two deliberate exceptions to "no raw SQL"</h2>
+ *
+ * <ol>
+ * <li>Suppliers. M5 built {@code GET /suppliers/{supplierId}} only —
+ * deliberately, see {@code SupplierService}'s Javadoc — so there is no real
+ * mechanism to call. One {@code INSERT} per supplier, flagged here and in
+ * {@link #createSupplier}.
+ * <li>A purchase order's {@code ordered_at}. {@code PurchaseOrderService
+ * .submit} always stamps it to the real current instant — deliberately, so a
+ * client cannot lie about when it ordered (M5) — and the contract gives a
+ * seed script no other way to place a PO's history at a historical date. The
+ * PO itself still goes through {@code create}/{@code submit} for real: this
+ * patches one timestamp afterward, on a row the real service created,
+ * exercising the real guard and lock. See {@link #seedSupplierHistory}.
+ * </ol>
+ */
+@Component
+public class TenantSeeder {
+
+    private final TenantRegistrationService registration;
+    private final ProductCatalog catalog;
+    private final SaleService sales;
+    private final StockLedgerService ledger;
+    private final PurchaseOrderService purchaseOrders;
+    private final GoodsReceiptService goodsReceipts;
+    private final JdbcTemplate jdbc;
+
+    public TenantSeeder(TenantRegistrationService registration,
+                        ProductCatalog catalog,
+                        SaleService sales,
+                        StockLedgerService ledger,
+                        PurchaseOrderService purchaseOrders,
+                        GoodsReceiptService goodsReceipts,
+                        @Qualifier("appDataSource") DataSource appDataSource) {
+        this.registration = registration;
+        this.catalog = catalog;
+        this.sales = sales;
+        this.ledger = ledger;
+        this.purchaseOrders = purchaseOrders;
+        this.goodsReceipts = goodsReceipts;
+        this.jdbc = new JdbcTemplate(appDataSource);
+    }
+
+    /** Everything a caller needs to find and verify what was seeded. */
+    public record SeededTenant(
+            UUID tenantId,
+            UUID ownerId,
+            UUID locationId,
+            UUID supplierId,
+            Map<String, UUID> productIdsByShape) {
+    }
+
+    /**
+     * @param slug        must be a valid tenant slug (lowercase, digits,
+     *                    hyphens) and unique across the database — callers
+     *                    seeding more than once per run must vary it
+     * @param randomSeed  makes the day-to-day randomness reproducible for a
+     *                    given slug, without making every tenant identical
+     * @param windowWeeks the length of the demand history. 30 (~7 months) in
+     *                    real seed runs, comfortably inside the 6-12 month
+     *                    ask; shorter in tests so the mechanism can be
+     *                    proven quickly. Must stay above ~14 weeks for the
+     *                    intermittent shape to mean anything (ADR §5).
+     */
+    public SeededTenant seedTenant(String businessName, String slug, long randomSeed, int windowWeeks) {
+        LocalDate today = LocalDate.now();
+        LocalDate windowStart = today.minusWeeks(windowWeeks);
+        Random rng = new Random(randomSeed);
+
+        AuthTokens tokens = registration.register(new TenantRegistrationRequest(
+                businessName, slug, "owner+" + slug + "@example.test", "SeedPassw0rd!1",
+                "Seed Owner", null, null));
+        UUID tenantId = tokens.user().tenant().id();
+        UUID ownerId = tokens.user().id();
+
+        TenantContext.bind(new TenantContext.TenantIdentity(tenantId, ownerId, "owner"));
+        try {
+            UUID locationId = catalog.createLocation(
+                    new LocationWriteRequest("Main Store", null, true)).id();
+            UUID categoryId = catalog.createCategory(
+                    new CategoryWriteRequest("Bakery", null)).id();
+
+            UUID steadyId = createProduct(slug + "-steady", "Steady Seller Bread", categoryId);
+            UUID intermittentId = createProduct(slug + "-inter", "Intermittent Spice Mix", categoryId);
+            UUID stockoutId = createProduct(slug + "-stockout", "Popular Croissant", categoryId);
+            UUID trendingId = createProduct(slug + "-trend", "Trending Cold Brew", categoryId);
+            UUID deadId = createProduct(slug + "-dead", "Discontinued Fruitcake", categoryId);
+            UUID newId = createProduct(slug + "-new", "Brand New Sourdough", categoryId);
+
+            seedSteadySeller(steadyId, locationId, windowStart, today, new Random(rng.nextLong()));
+            seedIntermittentSeller(intermittentId, locationId, windowStart, today, new Random(rng.nextLong()));
+            seedStockoutProduct(stockoutId, locationId, windowStart, today, new Random(rng.nextLong()));
+            seedTrendingProduct(trendingId, locationId, windowStart, today, new Random(rng.nextLong()));
+            seedDeadStock(deadId, locationId, windowStart);
+            seedBrandNew(newId, locationId, today, new Random(rng.nextLong()));
+
+            UUID supplierId = createSupplier(tenantId, "Golden Wheat Supplies " + slug, 7);
+            seedSupplierHistory(supplierId, locationId, List.of(steadyId, trendingId),
+                    windowStart, today, new Random(rng.nextLong()));
+
+            Map<String, UUID> shapes = new LinkedHashMap<>();
+            shapes.put("steady", steadyId);
+            shapes.put("intermittent", intermittentId);
+            shapes.put("stockout", stockoutId);
+            shapes.put("trending", trendingId);
+            shapes.put("dead", deadId);
+            shapes.put("new", newId);
+
+            return new SeededTenant(tenantId, ownerId, locationId, supplierId, shapes);
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Product shapes
+    // ------------------------------------------------------------------
+
+    /**
+     * ~20/week, low variance — the ADR's worked example (§6: "You sell about
+     * 20 a week..."). Sells on ~90% of days at a narrow 2-4 unit range,
+     * which is deliberately NOT 100%: a generator that sells every single
+     * day never produces a zero-demand day, and "demand_daily includes
+     * zero-demand days" is M6's own most-common-bug warning. The 10% of
+     * silent days are exactly that gap.
+     */
+    void seedSteadySeller(UUID productId, UUID locationId, LocalDate start, LocalDate endExclusive, Random rng) {
+        stockUp(productId, locationId, start.minusDays(1), new BigDecimal(200), new BigDecimal("8.00"));
+        for (LocalDate date = start; date.isBefore(endExclusive); date = date.plusDays(1)) {
+            if (rng.nextDouble() < 0.90) {
+                sell(productId, locationId, date, 2 + rng.nextInt(3));
+            }
+        }
+    }
+
+    /**
+     * Sells on roughly 1 day in 10 — deliberately breaks a naive moving
+     * average and is what routes {@code MethodSelector} to Croston once M7
+     * exists. The window this is called with must be long enough that ~10%
+     * of its days clears the ADR's 10-non-zero-day floor with room to
+     * spare — {@code seedTenant} enforces that via {@code windowWeeks}, not
+     * this method, since readiness is a property of the whole window, not
+     * of a single product's generator.
+     */
+    void seedIntermittentSeller(UUID productId, UUID locationId, LocalDate start, LocalDate endExclusive,
+                                Random rng) {
+        stockUp(productId, locationId, start.minusDays(1), new BigDecimal(60), new BigDecimal("12.00"));
+        for (LocalDate date = start; date.isBefore(endExclusive); date = date.plusDays(1)) {
+            if (rng.nextDouble() < 0.10) {
+                sell(productId, locationId, date, 1 + rng.nextInt(3));
+            }
+        }
+    }
+
+    /**
+     * Demand that shifts over the window — a real trend, not a flat rate
+     * with noise. Weekly target quantity rises linearly from ~5/week at the
+     * start to ~5 + 0.6*weeks by the end (roughly 22/week at 30 weeks), so a
+     * method that assumes a stationary mean (plain moving average) will
+     * visibly lag it.
+     */
+    void seedTrendingProduct(UUID productId, UUID locationId, LocalDate start, LocalDate endExclusive, Random rng) {
+        stockUp(productId, locationId, start.minusDays(1), new BigDecimal(250), new BigDecimal("6.00"));
+        for (LocalDate date = start; date.isBefore(endExclusive); date = date.plusDays(1)) {
+            double weekIndex = ChronoUnit.DAYS.between(start, date) / 7.0;
+            double weeklyTarget = 5.0 + weekIndex * 0.6;
+            double dailyProbability = Math.min(0.85, weeklyTarget / 7.0 / 2.0);
+            if (rng.nextDouble() < dailyProbability) {
+                int qty = Math.max(1, (int) Math.round(weeklyTarget / 7.0 * (0.7 + rng.nextDouble() * 0.6)));
+                sell(productId, locationId, date, qty);
+            }
+        }
+    }
+
+    /** No sales at all, ever, in this window — dead stock, exactly as advertised. */
+    void seedDeadStock(UUID productId, UUID locationId, LocalDate openingDate) {
+        stockUp(productId, locationId, openingDate, new BigDecimal(15), new BigDecimal("20.00"));
+    }
+
+    /**
+     * Under 2 weeks of SALES history, deliberately below the ADR's 42-day
+     * readiness floor on both dimensions at once. The product row itself is
+     * created at the same time as every other product in this tenant (see
+     * {@code seedTenant}) rather than backdated or postdated — nothing
+     * currently reads {@code products.created_at} for readiness, and once
+     * M7's rollup exists it will key off {@code demand_daily}'s own row
+     * span, which is exactly what restricting the SALES to the last 10 days
+     * produces.
+     */
+    void seedBrandNew(UUID productId, UUID locationId, LocalDate today, Random rng) {
+        LocalDate start = today.minusDays(10);
+        stockUp(productId, locationId, start, new BigDecimal(30), new BigDecimal("9.00"));
+        for (LocalDate date = start; date.isBefore(today); date = date.plusDays(1)) {
+            if (rng.nextDouble() < 0.4) {
+                sell(productId, locationId, date, 1 + rng.nextInt(2));
+            }
+        }
+    }
+
+    /**
+     * A genuine stockout: sold down to zero by real sales (never set
+     * directly), left at zero for several days during which a real sale
+     * attempt is made and confirmed refused — not skipped — then restocked
+     * and resumed. This is what {@code had_stockout} exists to flag once
+     * M7's rollup exists: the censored days below are not "no demand", they
+     * are "demand nobody could fill", and a generator that only produces a
+     * zero stock LEVEL without an actual refused sale cannot be told apart
+     * from ordinary dead stock.
+     */
+    void seedStockoutProduct(UUID productId, UUID locationId, LocalDate start, LocalDate endExclusive, Random rng) {
+        long totalDays = ChronoUnit.DAYS.between(start, endExclusive);
+        LocalDate stockoutStart = start.plusDays(totalDays * 4 / 10); // roughly 40% into the window
+
+        stockUp(productId, locationId, start.minusDays(1), new BigDecimal(40), new BigDecimal("7.00"));
+
+        // Baseline selling, drawing the shelf down toward zero. Capped to
+        // current stock rather than a fixed opening amount: this is what
+        // makes the shape correct at any window length, not just the one
+        // this generator happens to have been tuned against.
+        LocalDate date = start;
+        while (date.isBefore(stockoutStart)) {
+            if (rng.nextDouble() < 0.6) {
+                sellUpTo(productId, locationId, date, 2 + rng.nextInt(3));
+            }
+            date = date.plusDays(1);
+        }
+
+        // Force the last of the shelf out exactly on stockoutStart, so the
+        // refused attempts below are refused from day one of the window,
+        // not after a few more days of coincidental depletion.
+        BigDecimal remaining = currentStock(productId, locationId);
+        if (remaining.signum() > 0) {
+            sell(productId, locationId, stockoutStart, remaining.intValue());
+        }
+
+        // The stockout itself: real refused sales on real days, not an
+        // absence of activity. If any of these unexpectedly succeeds, stock
+        // was left on the shelf and this is not a genuine stockout — fail
+        // loudly rather than seed a shape that looks right and isn't.
+        int stockoutDays = 5;
+        for (int i = 0; i < stockoutDays; i++) {
+            LocalDate refusedDate = stockoutStart.plusDays(i);
+            boolean refused = attemptSaleExpectingRefusal(productId, locationId, refusedDate, 2);
+            if (!refused) {
+                throw new IllegalStateException(
+                        "Seed data bug: a sale succeeded during the intended stockout window for "
+                                + productId + " on " + refusedDate + " — the shelf was not actually empty.");
+            }
+        }
+
+        // Restock, and resume a lighter baseline for the rest of the window
+        // so there is a genuine "before and after" to compare the outage
+        // against.
+        LocalDate restockDate = stockoutStart.plusDays(stockoutDays);
+        stockUp(productId, locationId, restockDate, new BigDecimal(35), new BigDecimal("7.00"));
+        for (LocalDate d = restockDate.plusDays(1); d.isBefore(endExclusive); d = d.plusDays(1)) {
+            if (rng.nextDouble() < 0.5) {
+                sellUpTo(productId, locationId, d, 2 + rng.nextInt(2));
+            }
+            // A second, smaller top-up partway through the resumed baseline
+            // — otherwise a long post-restock tail (the real 30-week seed
+            // run, not this class's shorter test window) would run the
+            // shelf back down to zero on its own, quietly turning "resumed
+            // normal selling" back into a second, unintended stockout.
+            if (d.equals(restockDate.plusDays(ChronoUnit.DAYS.between(restockDate, endExclusive) / 2))) {
+                stockUp(productId, locationId, d, new BigDecimal(35), new BigDecimal("7.00"));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Purchasing / suppliers
+    // ------------------------------------------------------------------
+
+    /**
+     * One supplier used by two products' worth of restocking, receiving 6
+     * separate purchase orders spread across the window — above the ADR's
+     * n>=5 threshold (§2), so {@code observedLeadTime} is populated with a
+     * real sample size once queried, not just a lone row.
+     */
+    void seedSupplierHistory(UUID supplierId, UUID locationId, List<UUID> productIds,
+                             LocalDate windowStart, LocalDate today, Random rng) {
+        int receiptCount = 6;
+        long totalDays = ChronoUnit.DAYS.between(windowStart, today);
+
+        for (int i = 0; i < receiptCount; i++) {
+            UUID productId = productIds.get(i % productIds.size());
+            LocalDate orderedDate = windowStart.plusDays(totalDays * i / receiptCount);
+            int leadDays = 3 + rng.nextInt(6); // 3..8 — real variance, not a constant
+            OffsetDateTime orderedAt = orderedDate.atTime(9, 0).atOffset(ZoneOffset.UTC);
+            OffsetDateTime receivedAt = orderedAt.plusDays(leadDays);
+            BigDecimal quantity = new BigDecimal(40 + rng.nextInt(20));
+            BigDecimal unitCost = new BigDecimal("8.00");
+
+            var created = purchaseOrders.create(new PurchaseOrderWriteRequest(
+                    supplierId, locationId, null, "Seed restock", null,
+                    List.of(new PurchaseOrderLineRequest(productId, quantity, unitCost))));
+            UUID poId = created.id();
+
+            purchaseOrders.submit(poId);
+            // See the class Javadoc: the one timestamp this generator patches
+            // directly, and why.
+            jdbc.update("UPDATE purchase_orders SET ordered_at = ? WHERE id = ?",
+                    java.sql.Timestamp.from(orderedAt.toInstant()), poId);
+
+            goodsReceipts.receive(poId, new ReceiptRequest(receivedAt,
+                    List.of(new ReceiptLine(productId, quantity, unitCost))));
+        }
+    }
+
+    /**
+     * The one deliberate raw {@code INSERT} in this generator — see the
+     * class Javadoc. {@code lead_time_days} is set well away from the real
+     * observed figures {@link #seedSupplierHistory} produces (3-8 days), so
+     * a bug that returned the promised value instead of the observed one
+     * would be visible rather than accidentally plausible.
+     */
+    private UUID createSupplier(UUID tenantId, String name, int promisedLeadTimeDays) {
+        UUID supplierId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO suppliers (id, tenant_id, name, lead_time_days)
+                VALUES (?, ?, ?, ?)
+                """, supplierId, tenantId, name, promisedLeadTimeDays);
+        return supplierId;
+    }
+
+    // ------------------------------------------------------------------
+    // Shared mechanics
+    // ------------------------------------------------------------------
+
+    private UUID createProduct(String sku, String name, UUID categoryId) {
+        catalog.create(new ProductWriteRequest(
+                sku, null, name, null, categoryId, "each",
+                new BigDecimal("8.00"), new BigDecimal("15.00"), new BigDecimal("0.15"),
+                null, null, null, true, false, null));
+        // ProductCatalog.create returns Versioned<Product>, which is
+        // package-private to catalog — inaccessible from here by design (the
+        // version travels beside the DTO, never in it). Reading the id back
+        // by the sku this method just chose is simpler than the alternative
+        // of moving this class into that package for one field.
+        return jdbc.queryForObject("SELECT id FROM products WHERE sku = ?", UUID.class, sku);
+    }
+
+    private void sell(UUID productId, UUID locationId, LocalDate date, int quantity) {
+        sales.record(new SaleWriteRequest(
+                List.of(new SaleLineRequest(productId, new BigDecimal(quantity), null, null)),
+                null, locationId, null, null, null, null,
+                date.atTime(12, 0).atOffset(ZoneOffset.UTC)));
+    }
+
+    /**
+     * Sells up to {@code wanted}, capped to whatever is actually on hand —
+     * for shapes that deliberately run a product close to empty, where a
+     * fixed quantity would eventually oversell and abort the whole seed run
+     * (T12: the ledger trigger refuses it, correctly, and a seed script has
+     * no business papering over that with a pre-check either — this reads
+     * the balance to decide how much to ASK for, same as a cashier would,
+     * not to bypass the trigger's own refusal).
+     */
+    private void sellUpTo(UUID productId, UUID locationId, LocalDate date, int wanted) {
+        int available = currentStock(productId, locationId).intValue();
+        int actual = Math.min(wanted, available);
+        if (actual > 0) {
+            sell(productId, locationId, date, actual);
+        }
+    }
+
+    /** @return true if the sale was refused for insufficient stock, as intended */
+    private boolean attemptSaleExpectingRefusal(UUID productId, UUID locationId, LocalDate date, int quantity) {
+        try {
+            sell(productId, locationId, date, quantity);
+            return false;
+        } catch (InsufficientStockException e) {
+            return true;
+        }
+    }
+
+    private void stockUp(UUID productId, UUID locationId, LocalDate date, BigDecimal quantity,
+                         BigDecimal unitCost) {
+        ledger.post(new MovementRequest(productId, locationId, "adjustment", quantity, unitCost,
+                null, null, "seed opening stock", date.atTime(8, 0).atOffset(ZoneOffset.UTC)));
+    }
+
+    private BigDecimal currentStock(UUID productId, UUID locationId) {
+        return jdbc.queryForObject("""
+                SELECT COALESCE(SUM(quantity_on_hand), 0) FROM product_stock
+                WHERE product_id = ? AND location_id = ?
+                """, BigDecimal.class, productId, locationId);
+    }
+}
