@@ -122,6 +122,19 @@ needs to exist to catch — a seed set with no stockout days can't distinguish
 count (non-zero demand days) is over eligible days only. §5's calendar-span
 floor (history length) is **not** narrowed the same way — see §5 for why.
 
+**This document is silent on how a return nets out of `units_sold`, and that
+silence was mistaken for coverage once already.** The rule was decided in M7
+step 1 and is recorded on the column itself — `COMMENT ON COLUMN
+demand_daily.units_sold`, added by `V9` — rather than only here, because the
+person who needs it is reading the table. In short: `units_sold` is `sale`
+movements minus `sale_return` movements, floored at zero per day. A unit
+sold and then handed back and put on the shelf was never real demand, and
+counting it would overstate `avg_daily_demand` straight into §1's reorder
+point. A damaged-goods return posts no ledger movement at all (`V5`), so it
+is correctly counted as demand — the customer wanted it, the shelf lost it.
+Nothing about this changes §3's had-stockout exclusion, which is a separate
+question answered by a separate column.
+
 ---
 
 ## 4. Method selection: `MethodSelector`, not configuration
@@ -260,10 +273,8 @@ possible forecast, which is the point: if the real method can't beat it,
 "the model isn't earning its complexity" is a mechanical fact, not a
 judgment call.
 
-**Representation is an M7 migration decision, not a forecasting-design one,
-and isn't made here** — the current `forecast_accuracy` table has no column
-for a baseline figure and `forecast_method` has no `naive` value. Two shapes
-were considered, sketched for whoever writes M7's migration:
+**Representation was left to M7's migration author. RESOLVED in M7 step 1 —
+shape (a).** Two shapes were considered:
 
 - (a) generate a synthetic forecast row per evaluation using a new
 `naive` value on `forecast_method`, and score it through the existing
@@ -272,13 +283,25 @@ new columns.
 - (b) add sibling columns (`naive_predicted_qty`, `naive_abs_pct_error`)
 directly on `forecast_accuracy`.
 
-(a) is the lighter touch and is the recommendation, but the call belongs to
-whoever writes that migration, with the constraint above already settled:
-the comparison must exist from day one, and it must be visible per
-demand-shape bucket (steady vs. intermittent vs. seasonal), not only as one
-averaged number — a method that beats naive for steady sellers and loses for
-intermittent ones is a real finding, and averaging the two together would
-hide exactly the thing this evaluation exists to surface.
+**(a) was chosen, and `V9__demand_rollup_and_naive_baseline.sql` adds the
+`naive` value to the `forecast_method` enum.** One scoring path rather than
+two, and no columns sitting NULL on every non-baseline row.
+
+**A new enum value rather than reusing `moving_average`** — worth stating,
+because the two compute the same number for a one-period window and reusing
+the existing value looks like a harmless simplification. It isn't: the
+comparison stops meaning anything the moment both sides carry the same
+label. The question this evaluation exists to answer is "is the chosen
+method beating the dumbest possible forecast", and if both sides are stored
+as `moving_average` no query can separate them. The per-bucket finding below
+becomes unreadable the same way.
+
+The constraint that was already settled still stands: the comparison must
+exist from day one, and it must be visible per demand-shape bucket (steady
+vs. intermittent vs. seasonal), not only as one averaged number — a method
+that beats naive for steady sellers and loses for intermittent ones is a
+real finding, and averaging the two together would hide exactly the thing
+this evaluation exists to surface.
 
 ---
 

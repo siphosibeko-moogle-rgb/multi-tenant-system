@@ -40,14 +40,15 @@ public class SeedDataRunner implements ApplicationRunner {
      * ~7 months — comfortably inside the 6-12 month ask, and well above the
      * ADR's ~14-week readiness point for the intermittent shape (§5).
      *
-     * <p>Package-visible, not {@code private}: {@code SeedDataVerificationTest}
-     * asserts against this exact value rather than a shorter one of its own.
+     * <p>Public, not {@code private}: {@code SeedDataVerificationTest} and
+     * M7's {@code DemandRollupSeedDataTest} both run against this exact value
+     * rather than a shorter one of their own.
      * A real seed run once threw {@code InsufficientStockException} on the
      * steady seller at this window length after the test suite — run at a
      * shorter window, for speed — passed clean; sharing this constant is
      * what stops that gap from reopening the next time either number moves.
      */
-    static final int WINDOW_WEEKS = 30;
+    public static final int WINDOW_WEEKS = 30;
 
     private final TenantSeeder seeder;
     private final ConfigurableApplicationContext context;

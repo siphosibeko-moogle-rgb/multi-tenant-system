@@ -384,7 +384,14 @@ and the exact readiness thresholds) are recorded ahead of this milestone in
 below rather than re-deriving them.
 
 **Build**
-- `DemandRollupJob`: movements → `demand_daily`, in the tenant's timezone
+- ~~`DemandRollupJob`: movements → `demand_daily`, in the tenant's timezone~~
+— done, step 1. Zero-demand days come from `generate_series` over each
+product/location's calendar span, not from the days that have movements;
+`had_stockout` reconstructs the running balance, because an outage is an
+*absence* of rows (a refused sale writes nothing, T12). `units_sold` nets
+restocked returns and floors at zero — a rule the ADR was silent on,
+recorded by `V9` on the column itself. Runs on the caller's bound tenant
+and never binds one itself; see **Open question** below.
 - `ForecastMethod` strategy: moving average, weighted MA, exponential smoothing,
 Croston for intermittent demand
 - `MethodSelector` choosing by data shape, not by config — see
@@ -425,13 +432,61 @@ reorder point at 21 promised days than the same product at 3
 - `forecast_accuracy` rows appear after the evaluation job runs, each scored
 against the naive "same as last period" baseline over the same period — not
 merely computed and left uncompared
-- **Picked up from M6, not re-derived:** running `DemandRollupJob` against
-M6's seed data (`./mvnw spring-boot:run -Dspring-boot.run.profiles=local,seed`)
-produces `demand_daily` rows with genuine zero-demand days for the steady
-seller, and `had_stockout: true` on the stockout product's outage days —
-the two criteria M6 could only verify one level lower, against
-`stock_movements` directly, because `DemandRollupJob` did not exist yet to
-check them against the table they actually name.
+- ~~**Picked up from M6, not re-derived:** running `DemandRollupJob` against
+M6's seed data produces `demand_daily` rows with genuine zero-demand days
+for the steady seller, and `had_stockout: true` on the stockout product's
+outage days~~ — done, step 1, `DemandRollupSeedDataTest` (30-week window,
+seed 1, the same draw `SeedDataVerificationTest`'s tenant A uses).
+
+**Observed, so steps 2–6 argue with real numbers rather than assumptions:**
+
+| shape | days | non-zero | zero | flagged | eligible non-zero | units |
+|---|---|---|---|---|---|---|
+| steady | 212 | 185 | 27 | 0 | 185 | 562 |
+| intermittent | 212 | 21 | 191 | 0 | 21 | 53 |
+| stockout | 212 | 73 | 139 | 64 | 72 | 186 |
+| trending | 212 | 154 | 58 | 0 | 154 | 324 |
+| dead | 211 | 0 | 211 | 0 | 0 | 0 |
+| brand-new | 11 | 5 | 6 | 0 | 5 | 6 |
+
+- The stockout exclusion is worth **41%** on this data: the stockout
+product averages **1.236/day over its 148 eligible days** and would
+average **0.877/day** if the flagged days were averaged in. That is
+`docs/adr/forecasting.md` §3's spiral, measurable — step 3 asserts on it.
+- `nonzero_fraction` for the intermittent shape is **0.099**, which
+confirms the ADR §5 table's "~week 14" prediction for it and sits well
+clear of §4's 0.3 Croston line.
+- Dead stock: 211 rows, all zero, **none flagged** — it has stock on the
+shelf the whole time. Reading it as censored would be the censored-demand
+rule firing on the one product it must not fire on.
+
+**Two findings about M6's seed data, recorded rather than worked around:**
+
+1. **The steady seller measures ~2.65/day (18.6/week), not the ~2.9/day
+(20/week) this milestone's own "Done when" bullet states.** That is the
+generator behaving as coded — ~87% of days × 2–4 units ≈ 2.7/day — not a
+rollup error; the reconciliation test proves `demand_daily` totals equal
+the ledger's own figure exactly. So either the seeder's rate or the
+milestone's stated figure should move. See `docs/adr/forecasting.md` §8
+item 1, which already flagged that this number changed once.
+2. **The stockout product's outage is ~64 contiguous days, not the five
+M6 scripts.** `sellUpTo` caps each sale to what is on the shelf, so the
+40-unit opening stock is drawn down by roughly day 22 and the shelf then
+sits empty until the scripted refusal window at ~day 84 and the restock
+at ~day 89. Only the last five days carry the confirmed refused sales;
+the preceding ~59 are silent emptiness. M6's own `stockoutIsGenuine`
+passes because it checks the balance touches zero and a sale was
+refused, both of which hold. Harmless for M7 — it produces *more*
+censored days to test against, and the flagged run ends exactly on the
+receipt's own date — but it means "the stockout period" is 30% of that
+product's history rather than a brief dip.
+
+**Open question, raised rather than answered (CLAUDE.md §12):** who runs
+the rollup across every tenant. `DemandRollupJob` deliberately never binds
+a tenant and never enumerates them, so today it runs only on a bound
+request thread. A scheduled cross-tenant job needs either a per-tenant
+service credential or a second documented exception to T1. Widening T1 to
+make a cron job convenient is exactly what §12 forbids.
 
 ---
 
