@@ -402,8 +402,13 @@ recorded by `V9` on the column itself. Runs on the caller's bound tenant
 and never binds one itself; see **Open question** below.
 - `ForecastMethod` strategy: moving average, weighted MA, exponential smoothing,
 Croston for intermittent demand
-- `MethodSelector` choosing by data shape, not by config — see
-`docs/adr/forecasting.md` §4 for the three buckets and the split condition
+- ~~`MethodSelector` choosing by data shape, not by config~~ — done, step 2.
+Readiness, then `nonzero_fraction < 0.3` → Croston, then the steady split
+resolved from measured trend: `|relativeTrend| > 0.5` →
+`weighted_moving_average`, else `moving_average`. Stable across five RNG
+seeds. `exponential_smoothing` and `ml_model` stay unselected. History is a
+**bounded 12-month trailing window** (`app.forecasting.history-window-days`),
+not all-history — see `docs/adr/forecasting.md` §4.
 - Reorder point = `avg daily demand × lead time + safety stock`, safety stock
 from demand variability and the service level (exact formula:
 `docs/adr/forecasting.md` §1)
@@ -422,6 +427,9 @@ model exists to justify
 days-of-cover figure. That figure is measured from the seed data and
 reconciled against the ledger (step 1), not derived from prose — see
 `docs/adr/forecasting.md` §8 item 1 for why it is written down twice.
+**Confirmed unchanged under the bounded 12-month window** (step 2): M6
+seeds ~212 days, which fits inside 365, so the window trims nothing here.
+Measured 2.538–2.731 across five seeds, mean ~2.66.
 - The intermittent product does **not** get a naive-average forecast — the
 selector routes it to Croston
 - A product below the readiness threshold (`docs/adr/forecasting.md` §5 —
@@ -492,6 +500,30 @@ refused, both of which hold. Harmless for M7 — it produces *more*
 censored days to test against, and the flagged run ends exactly on the
 receipt's own date — but it means "the stockout period" is 30% of that
 product's history rather than a brief dip.
+
+**BLOCKING — seasonal products do not get a trustworthy reorder point, and
+M7 cannot be called complete until they do.**
+
+No method here models a cycle, so a genuinely seasonal product has its peaks
+and troughs averaged flat: the reorder point is right for an average week of
+the year and wrong, in both directions at different times, precisely when it
+matters. `docs/adr/forecasting.md` §4 carries the detail.
+
+This is an **open requirement, not a permanent asterisk**, and it is gated
+rather than merely noted. `DemandSeries.seasonalityIndicator()` measures
+detrended autocorrelation at candidate cycle lengths and, above 0.35, sets
+`Selection.isSeasonalitySuspected()`; the forecast then carries an explicit
+caveat **in the API response itself**, so a shop owner acting on the number
+is told the number is not to be trusted for their product. It detects *that*
+a cycle exists, never which one — detecting seasonality is a far cheaper
+problem than forecasting it.
+
+Closing this means a method with a seasonal term, and M6's "seasonal or
+trending" shape being seeded as something genuinely cyclical rather than as
+a pure ramp — it is currently only the latter, so nothing in the seed data
+exercises the caveat end to end. Measured across five seeds, every M6 shape
+sits between 0.026 and 0.189, well under the threshold; the detection is
+proven against a constructed weekly cycle instead.
 
 **Named gap — scheduled cross-tenant rollup is not built.** Recompute is
 request-bound via `POST /forecasts/recompute`; a scheduled cross-tenant

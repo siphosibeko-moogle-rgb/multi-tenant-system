@@ -77,6 +77,24 @@ management:
     db:
       enabled: true
 
+app:
+  forecasting:
+    # How far back a forecast looks, in days. Twelve months: long enough to
+    # contain a full annual cycle if the product has one, short enough that
+    # demand from over a year ago stops steering today's reorder point.
+    #
+    # A property rather than a constant so it can be retuned without a
+    # redeploy. It is still per-DEPLOYMENT, not per-tenant — a shop selling
+    # fresh produce and one selling furniture genuinely want different
+    # windows, and serving both from one instance needs this to come from a
+    # tenant lookup instead. DemandSeriesRepository.windowDays() is the single
+    # place that would change.
+    #
+    # Rejected at startup below MethodSelector.MIN_HISTORY_DAYS (42): a
+    # shorter window than the readiness floor would refuse every product a
+    # forecast, silently and forever.
+    history-window-days: 365
+
 logging:
   level:
     org.flywaydb: info

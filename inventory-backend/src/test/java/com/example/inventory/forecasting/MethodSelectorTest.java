@@ -279,6 +279,132 @@ class MethodSelectorTest {
     }
 
     @Nested
+    @DisplayName("seasonality")
+    class Seasonality {
+
+        /** A weekly cycle: high on two days a week, low the rest. */
+        private static DemandSeries weeklyCycle(int days, double baseline, double peak) {
+            List<Day> list = new ArrayList<>();
+            for (int i = 0; i < days; i++) {
+                boolean weekendish = i % 7 == 5 || i % 7 == 6;
+                list.add(new Day(START.plusDays(i),
+                        BigDecimal.valueOf(weekendish ? peak : baseline), false));
+            }
+            return new DemandSeries(UUID.randomUUID(), UUID.randomUUID(), list);
+        }
+
+        @Test
+        @DisplayName("a weekly cycle is flagged")
+        void aCycleIsDetected() {
+            DemandSeries seasonal = weeklyCycle(210, 1.0, 6.0);
+            MethodSelector.Selection selection = selector.select(seasonal);
+
+            assertThat(seasonal.seasonalityIndicator())
+                    .as("a clean weekly cycle should correlate strongly with itself at lag 7. "
+                            + "Observed %s.", seasonal.seasonalityIndicator())
+                    .isGreaterThan(MethodSelector.SEASONALITY_THRESHOLD);
+            assertThat(selection.isSeasonalitySuspected())
+                    .as("and the flag the API caveat hangs off must be set")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("a flat series is not flagged")
+        void flatDemandIsNotSeasonal() {
+            DemandSeries flat = series(210, 1, new BigDecimal("3"));
+
+            assertThat(selector.select(flat).isSeasonalitySuspected())
+                    .as("a warning that appears on every product is one nobody reads")
+                    .isFalse();
+        }
+
+        /** A ramp with real, aperiodic day-to-day noise on top. */
+        private static DemandSeries noisyRamp(int days, double from, double to) {
+            java.util.Random rng = new java.util.Random(42);
+            List<Day> list = new ArrayList<>();
+            for (int i = 0; i < days; i++) {
+                double trend = from + (to - from) * i / (days - 1.0);
+                double value = Math.max(0, trend + (rng.nextDouble() - 0.5) * 2.0);
+                list.add(new Day(START.plusDays(i),
+                        BigDecimal.valueOf(Math.round(value * 1000), 3), false));
+            }
+            return new DemandSeries(UUID.randomUUID(), UUID.randomUUID(), list);
+        }
+
+        @Test
+        @DisplayName("a NOISY trending series is not flagged — this is what the detrending buys")
+        void aTrendIsNotMistakenForACycle() {
+            // Noisy on purpose. A clean ramp leaves almost no residual and is
+            // caught by the negligible-residual guard instead, which would make
+            // this test pass while exercising a different mechanism than its
+            // name claims (CLAUDE.md §5). Real noise means the residual is
+            // genuine and substantial, so the only thing keeping the indicator
+            // low is that the TREND was removed before correlating.
+            DemandSeries rising = noisyRamp(210, 1.0, 5.0);
+            MethodSelector.Selection selection = selector.select(rising);
+
+            assertThat(rising.stddev())
+                    .as("fixture check: the residual must be real, or the guard rather than "
+                            + "the detrending is what this test measures")
+                    .isGreaterThan(new BigDecimal("0.5"));
+            assertThat(selection.method())
+                    .as("fixture check: this must actually be routed as trending, or the "
+                            + "assertion below is about the wrong series")
+                    .isEqualTo(ForecastMethod.WEIGHTED_MOVING_AVERAGE);
+            assertThat(selection.isSeasonalitySuspected())
+                    .as("a steadily growing series is highly autocorrelated at EVERY lag "
+                            + "simply because tomorrow resembles today. Without removing the "
+                            + "fitted line first, every trending product would carry a "
+                            + "seasonality caveat and the flag would mean nothing. Observed "
+                            + "indicator %s.", selection.seasonalityIndicator())
+                    .isFalse();
+        }
+
+        @Test
+        @DisplayName("a series the trend explains entirely reports no cycle")
+        void aNegligibleResidualIsNotACycle() {
+            // A clean ramp, quantised to three decimals. The leftovers are pure
+            // rounding — and rounding a linear sequence is itself a sawtooth,
+            // which correlated at 0.80 before the guard existed and put a
+            // seasonality caveat on a plainly non-seasonal product.
+            DemandSeries cleanRamp = ramp(210, 1.0, 5.0);
+
+            assertThat(cleanRamp.seasonalityIndicator())
+                    .as("normalising by a near-zero denominator makes arbitrarily small "
+                            + "structure look like a strong cycle")
+                    .isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("a series too short to contain two cycles is not flagged")
+        void oneBumpIsNotACycle() {
+            // 13 days cannot contain two weekly cycles, so lag 7 is not tested.
+            // A single bump is not evidence of periodicity, and treating it as
+            // such would caveat every new product.
+            DemandSeries tooShort = weeklyCycle(13, 1.0, 6.0);
+
+            assertThat(tooShort.seasonalityIndicator())
+                    .as("no candidate lag has two full cycles to compare")
+                    .isEqualByComparingTo("0");
+        }
+
+        @Test
+        @DisplayName("an insufficient_data product is never flagged as seasonal")
+        void anUnreadyProductCarriesNoSeasonalCaveat() {
+            DemandSeries tooNew = weeklyCycle(28, 1.0, 6.0);
+
+            assertThat(selector.select(tooNew).method())
+                    .as("fixture check: 28 days is under the 42-day floor")
+                    .isEqualTo(ForecastMethod.INSUFFICIENT_DATA);
+            assertThat(selector.select(tooNew).isSeasonalitySuspected())
+                    .as("there is no reorder point to caveat — 'still learning' already says "
+                            + "the number is not there, and stacking a second warning on it "
+                            + "would be noise")
+                    .isFalse();
+        }
+    }
+
+    @Nested
     @DisplayName("the estimators")
     class Estimators {
 

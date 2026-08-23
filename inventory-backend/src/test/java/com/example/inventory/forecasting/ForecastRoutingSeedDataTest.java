@@ -68,6 +68,17 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
     @Autowired
     private DemandModels models;
 
+    @Autowired
+    @org.springframework.beans.factory.annotation.Qualifier("appDataSource")
+    private javax.sql.DataSource appDataSource;
+
+    /** Rows the rollup wrote, before any window is applied. */
+    private long countRolledUpDays(SeededTenant tenant, String shape) {
+        return new org.springframework.jdbc.core.JdbcTemplate(appDataSource).queryForObject(
+                "SELECT count(*) FROM demand_daily WHERE product_id = ? AND location_id = ?",
+                Long.class, tenant.productIdsByShape().get(shape), tenant.locationId());
+    }
+
     private static List<SeededTenant> tenants;
     private static boolean prepared;
 
@@ -132,8 +143,8 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
         StringBuilder report = new StringBuilder(
                 "\n=== MethodSelector over M6 seed data, %d seeds x %d weeks ===\n"
                         .formatted(SEEDS.size(), WINDOW_WEEKS));
-        report.append(String.format("%-13s %5s %7s %9s %9s %8s  %s%n",
-                "shape", "seed", "history", "nonzeroFr", "trend", "avg/day", "method"));
+        report.append(String.format("%-13s %5s %7s %9s %9s %8s %8s  %s%n",
+                "shape", "seed", "history", "nonzeroFr", "trend", "season", "avg/day", "method"));
 
         Map<String, List<ForecastMethod>> byShape = new LinkedHashMap<>();
 
@@ -148,11 +159,13 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
                 String average = selection.isReady()
                         ? round(models.averageDailyDemand(selection.method(), series), 3).toString()
                         : "-";
-                report.append(String.format("%-13s %5d %7d %9s %9s %8s  %s%n",
+                report.append(String.format("%-13s %5d %7d %9s %9s %8s %8s  %s%s%n",
                         shape, seed, selection.historyDays(),
                         round(selection.nonzeroFraction(), 3),
                         round(selection.relativeTrend(), 3),
-                        average, selection.method().dbValue()));
+                        round(selection.seasonalityIndicator(), 3),
+                        average, selection.method().dbValue(),
+                        selection.isSeasonalitySuspected() ? "  [SEASONAL CAVEAT]" : ""));
             }
         }
 
@@ -170,6 +183,68 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
         assertThat(byShape.keySet())
                 .as("all six M6 shapes must be present, or a shape is silently going unrouted")
                 .hasSize(6);
+    }
+
+    @Test
+    @DisplayName("the 12-month window is a no-op at 30 weeks — the whole series still fits")
+    void theDefaultWindowDoesNotTrimThisSeedData() throws Exception {
+        SeededTenant tenant = tenants.get(0);
+
+        for (String shape : tenant.productIdsByShape().keySet()) {
+            DemandSeries windowed = seriesFor(tenant, shape);
+            long rolledUpRows = asTenant(tenant, () -> countRolledUpDays(tenant, shape));
+
+            assertThat((long) windowed.days().size())
+                    .as("%s: M6 seeds 30 weeks (~212 days), well inside a 365-day window, so "
+                            + "every rolled-up row must still reach the forecaster. If this "
+                            + "ever trims, every figure in MILESTONES M7 was computed over a "
+                            + "different series than the one the code now reads.", shape)
+                    .isEqualTo(rolledUpRows);
+        }
+    }
+
+    @Test
+    @DisplayName("a shorter window genuinely trims — the bound is real, not decorative")
+    void aShorterWindowTrimsTheSeries() throws Exception {
+        SeededTenant tenant = tenants.get(0);
+        // Constructed directly rather than through a second Spring context: the
+        // point is that the window value drives the query, and this is the
+        // cheapest way to prove it does.
+        DemandSeriesRepository narrow = new DemandSeriesRepository(
+                appDataSource, new ForecastingProperties(60));
+
+        DemandSeries full = seriesFor(tenant, "steady");
+        DemandSeries trimmed = asTenant(tenant, () -> narrow.load(
+                tenant.productIdsByShape().get("steady"), tenant.locationId()));
+
+        assertThat(full.days().size())
+                .as("the default window keeps the whole 30 weeks")
+                .isGreaterThan(200);
+        assertThat(trimmed.days().size())
+                .as("and a 60-day window keeps 60 days — without this, the window could be "
+                        + "ignored entirely and every test above would still pass, because "
+                        + "365 happens to exceed this seed data's length")
+                .isEqualTo(60);
+        assertThat(trimmed.lastDay())
+                .as("trimmed from the OLD end: a trailing window keeps the most recent days, "
+                        + "and keeping the oldest instead would forecast from history the "
+                        + "product has already left behind")
+                .isEqualTo(full.lastDay());
+    }
+
+    @Test
+    @DisplayName("no M6 shape trips the seasonality caveat — none of them is seasonal")
+    void noSeededShapeIsFlaggedSeasonal() throws Exception {
+        for (String shape : List.of("steady", "intermittent", "stockout", "trending")) {
+            forEachSeed(shape, (seed, selection) -> assertThat(selection.isSeasonalitySuspected())
+                    .as("seed %d, %s: M6 seeds no cyclical shape, so a caveat here would be a "
+                            + "false positive — and the trending product is the one that would "
+                            + "trip it if the autocorrelation were not detrended first. "
+                            + "Observed indicator %s against a %s threshold.",
+                            seed, shape, round(selection.seasonalityIndicator(), 3),
+                            MethodSelector.SEASONALITY_THRESHOLD)
+                    .isFalse());
+        }
     }
 
     @Test

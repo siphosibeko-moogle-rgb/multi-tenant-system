@@ -88,6 +88,22 @@ public class MethodSelector {
     static final BigDecimal TREND_THRESHOLD = new BigDecimal("0.5");
 
     /**
+     * Above this much detrended autocorrelation at a candidate cycle length, the
+     * series is treated as periodic and its forecast carries a caveat.
+     *
+     * <p>Calibrated the same way the others were — against the shapes that
+     * actually occur. None of M6's six shapes is seasonal by construction, and
+     * all of them measure below 0.2; a constructed weekly cycle measures far
+     * above it. 0.35 sits in that gap with room on both sides.
+     *
+     * <p>Deliberately not the textbook 2/√n significance line (~0.14 at 212
+     * days), which ordinary noise crosses often enough that the caveat would
+     * appear on products that are not seasonal at all — and a warning that
+     * shows up everywhere is one nobody reads.
+     */
+    static final BigDecimal SEASONALITY_THRESHOLD = new BigDecimal("0.35");
+
+    /**
      * What was chosen and the measurements that chose it.
      *
      * <p>The measurements ride along rather than being recomputed by callers,
@@ -104,11 +120,29 @@ public class MethodSelector {
             int nonZeroEligibleDays,
             BigDecimal nonzeroFraction,
             BigDecimal relativeTrend,
+            BigDecimal seasonalityIndicator,
             int daysShortOfHistory,
             int nonZeroDaysShortOfCount) {
 
         public boolean isReady() {
             return method != ForecastMethod.INSUFFICIENT_DATA;
+        }
+
+        /**
+         * The series repeats itself on a cycle this selector cannot model.
+         *
+         * <p>A forecast for such a product is still produced, and its reorder
+         * point is <strong>not trustworthy</strong>: every method here averages
+         * a cycle flat, so the number is right for an average week of the year
+         * and wrong — in both directions, at different times — for the peaks and
+         * troughs that are the entire reason a seasonal product needs planning.
+         *
+         * <p>Callers must surface this rather than swallow it. It is not a
+         * permanent asterisk: seasonal handling is an open M7 requirement, not a
+         * recorded limitation, and this flag is the seam it plugs into.
+         */
+        public boolean isSeasonalitySuspected() {
+            return isReady() && seasonalityIndicator.compareTo(SEASONALITY_THRESHOLD) > 0;
         }
 
         /**
@@ -133,6 +167,7 @@ public class MethodSelector {
         int nonZeroEligible = series.nonZeroEligibleDayCount();
         BigDecimal fraction = series.nonzeroFraction();
         BigDecimal trend = series.relativeTrend();
+        BigDecimal seasonality = series.seasonalityIndicator();
 
         int daysShortOfHistory = Math.max(0, MIN_HISTORY_DAYS - historyDays);
         int nonZeroShort = Math.max(0, MIN_NON_ZERO_ELIGIBLE_DAYS - nonZeroEligible);
@@ -143,7 +178,7 @@ public class MethodSelector {
         // like week one's.
         if (daysShortOfHistory > 0 || nonZeroShort > 0) {
             return new Selection(ForecastMethod.INSUFFICIENT_DATA, historyDays, eligibleDays,
-                    nonZeroEligible, fraction, trend, daysShortOfHistory, nonZeroShort);
+                    nonZeroEligible, fraction, trend, seasonality, daysShortOfHistory, nonZeroShort);
         }
 
         ForecastMethod method;
@@ -155,6 +190,6 @@ public class MethodSelector {
             method = ForecastMethod.MOVING_AVERAGE;
         }
         return new Selection(method, historyDays, eligibleDays, nonZeroEligible, fraction, trend,
-                0, 0);
+                seasonality, 0, 0);
     }
 }

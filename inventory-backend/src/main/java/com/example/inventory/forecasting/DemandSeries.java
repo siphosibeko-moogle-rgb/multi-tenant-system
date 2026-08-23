@@ -35,19 +35,30 @@ import java.util.UUID;
  * clock the same way the average is narrowed would make a stockout-prone product
  * wait longer for a forecast on top of the average it is already denied.
  *
- * <h2>The window is all available history</h2>
+ * <h2>The window is bounded, and the bound is configuration</h2>
  *
- * <p>ADR §4 says "the trailing history window" without fixing a length, and §5
- * defines {@code history_days} as the span from the first {@code demand_daily}
- * row to the most recent. Taken together the window is everything there is, and
- * that is what this class computes over. It is also what makes the steady
- * seller's measured 2.65/day reproducible: a 90-day window would report a
- * different number than the one {@code MILESTONES.md} now records.
+ * <p>ADR §4 says "the trailing history window" without fixing a length. It is
+ * fixed at twelve months by {@code app.forecasting.history-window-days} —
+ * {@link ForecastingProperties} — and {@link DemandSeriesRepository} applies it
+ * when loading, so everything here already sees only the windowed series and
+ * {@link #historyDays()} is the span of what survived.
  *
- * <p>The cost is that a long window lags a product whose demand is moving, which
- * is precisely why {@link #relativeTrend()} exists and why the selector routes a
+ * <p>Twelve months is long enough to contain a full annual cycle if the product
+ * has one, and short enough that demand from over a year ago stops steering
+ * today's reorder point. An unbounded window fails the second half: a product
+ * that genuinely changed — new competitor, price change, supplier switch — would
+ * keep being forecast from a market that no longer exists.
+ *
+ * <p>Even inside the bound a long window lags a product whose demand is moving,
+ * which is why {@link #relativeTrend()} exists and why the selector routes a
  * trending product away from a plain mean rather than letting the window flatten
  * it.
+ *
+ * <p>At M6's 30-week seed data the window changes nothing — 212 days fits inside
+ * 365 — which is why the steady seller still measures 2.65/day.
+ * {@code ForecastRoutingSeedDataTest} asserts both halves of that: that the
+ * default window trims nothing here, and that a shorter one genuinely does, so
+ * the bound cannot quietly stop being applied.
  */
 public record DemandSeries(UUID productId, UUID locationId, List<Day> days) {
 
@@ -206,6 +217,120 @@ public record DemandSeries(UUID productId, UUID locationId, List<Day> days) {
         }
         BigDecimal slope = covariance.divide(varianceX, MC);
         return slope.multiply(BigDecimal.valueOf(n - 1L), MC).divide(mean, MC);
+    }
+
+    /**
+     * Candidate cycle lengths, in days, tested for periodicity.
+     *
+     * <p>Weekly and fortnightly (a shop's own rhythm), monthly (pay cycles),
+     * quarterly, half-yearly and annual. Not an exhaustive search over every
+     * possible lag: this is a flag, not a model, and testing every lag would
+     * find a "best" one in pure noise for any series long enough.
+     */
+    private static final int[] CANDIDATE_LAGS = {7, 14, 30, 91, 182, 365};
+
+    /**
+     * Below this much residual variation, relative to the mean, the trend is
+     * taken to explain the whole series and no cycle is reported.
+     */
+    private static final BigDecimal NEGLIGIBLE_RESIDUAL_SHARE = new BigDecimal("0.01");
+
+    /**
+     * How strongly the series repeats itself at any candidate cycle length,
+     * after its linear trend is removed. Roughly 0 for noise, approaching 1 for
+     * a clean cycle.
+     *
+     * <p><strong>Detrending first is what makes this mean anything.</strong> A
+     * steadily growing series is highly autocorrelated at every lag simply
+     * because tomorrow resembles today — measure raw autocorrelation and every
+     * trending product looks seasonal. Subtracting the fitted line leaves the
+     * part of the series the trend does not explain, and asks whether <em>that
+     * remainder</em> repeats on a cycle.
+     *
+     * <p>This deliberately does not identify which cycle, and nothing acts on
+     * the number beyond raising a caveat. Detecting that a product is seasonal
+     * is a much cheaper problem than forecasting one, and the honest thing to do
+     * with the gap between them is say so — see {@link MethodSelector} and
+     * {@code docs/adr/forecasting.md} §4.
+     */
+    public BigDecimal seasonalityIndicator() {
+        List<Day> eligible = eligible();
+        int n = eligible.size();
+        if (n < 2 * CANDIDATE_LAGS[0]) {
+            return BigDecimal.ZERO;
+        }
+
+        BigDecimal mean = mean();
+        BigDecimal slope = rawSlope(eligible, mean);
+        // Residual after removing the fitted line. The intercept works out so
+        // that the residuals are centred on zero, which is what lets the
+        // correlation below be a plain sum of products.
+        BigDecimal meanX = BigDecimal.valueOf(n - 1L).divide(BigDecimal.valueOf(2), MC);
+        BigDecimal[] residuals = new BigDecimal[n];
+        for (int i = 0; i < n; i++) {
+            BigDecimal fitted = mean.add(
+                    slope.multiply(BigDecimal.valueOf(i).subtract(meanX), MC), MC);
+            residuals[i] = eligible.get(i).unitsSold().subtract(fitted);
+        }
+
+        BigDecimal denominator = BigDecimal.ZERO;
+        for (BigDecimal residual : residuals) {
+            denominator = denominator.add(residual.multiply(residual, MC), MC);
+        }
+        if (denominator.signum() == 0) {
+            return BigDecimal.ZERO;
+        }
+
+        // If the trend line already explains essentially the whole series, there
+        // is no remainder worth correlating and the ratio below stops meaning
+        // anything: it normalises by a denominator near zero, so arbitrarily
+        // small structure in the leftovers reads as a strong cycle.
+        //
+        // This is not hypothetical. A clean linear ramp, rounded to three
+        // decimals, leaves a residual that is nothing but rounding — and
+        // rounding a linear sequence produces a genuine sawtooth, which
+        // correlated at 0.80 and put a seasonality caveat on a plainly
+        // non-seasonal product. Caught by
+        // MethodSelectorTest.aTrendIsNotMistakenForACycle.
+        //
+        // A cycle whose amplitude is under 1% of the product's own mean is also
+        // not worth warning a shop owner about, so the same guard serves both.
+        BigDecimal residualRms = denominator.divide(BigDecimal.valueOf(n), MC).sqrt(MC);
+        if (residualRms.compareTo(mean.multiply(NEGLIGIBLE_RESIDUAL_SHARE, MC)) < 0) {
+            return BigDecimal.ZERO;
+        }
+
+        BigDecimal strongest = BigDecimal.ZERO;
+        for (int lag : CANDIDATE_LAGS) {
+            // Needs at least two full cycles to distinguish a cycle from a bump.
+            if (lag * 2 > n) {
+                continue;
+            }
+            BigDecimal numerator = BigDecimal.ZERO;
+            for (int i = 0; i + lag < n; i++) {
+                numerator = numerator.add(residuals[i].multiply(residuals[i + lag], MC), MC);
+            }
+            BigDecimal correlation = numerator.divide(denominator, MC).abs();
+            if (correlation.compareTo(strongest) > 0) {
+                strongest = correlation;
+            }
+        }
+        return strongest;
+    }
+
+    /** The OLS slope in units per position, shared by trend and detrending. */
+    private BigDecimal rawSlope(List<Day> eligible, BigDecimal mean) {
+        int n = eligible.size();
+        BigDecimal meanX = BigDecimal.valueOf(n - 1L).divide(BigDecimal.valueOf(2), MC);
+        BigDecimal covariance = BigDecimal.ZERO;
+        BigDecimal varianceX = BigDecimal.ZERO;
+        for (int i = 0; i < n; i++) {
+            BigDecimal dx = BigDecimal.valueOf(i).subtract(meanX);
+            BigDecimal dy = eligible.get(i).unitsSold().subtract(mean);
+            covariance = covariance.add(dx.multiply(dy, MC), MC);
+            varianceX = varianceX.add(dx.multiply(dx, MC), MC);
+        }
+        return varianceX.signum() == 0 ? BigDecimal.ZERO : covariance.divide(varianceX, MC);
     }
 
     /** Rounds a computed quantity to the scale its column stores. */

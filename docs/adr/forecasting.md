@@ -152,6 +152,21 @@ Three buckets, decided from the shape of a product/location's own
 days), over the trailing history window, where "eligible" is the same
 had-stockout exclusion as §3.
 
+**The trailing window is twelve months** (`app.forecasting.history-window-days`,
+default 365), settled in M7 step 2 — this document had left the length
+unstated. Long enough to contain a full annual cycle if the product has one,
+short enough that demand from over a year ago stops steering today's reorder
+point; an unbounded window fails that second half, since a product whose market
+genuinely changed would keep being forecast from the old one. It is a
+configuration property rather than a constant so it can be retuned without a
+redeploy, and it is still per-*deployment*: a shop selling fresh produce and one
+selling furniture want different windows, and serving both from one instance
+needs the value to come from a tenant lookup —
+`DemandSeriesRepository.windowDays()` is the single place that would change.
+Values below §5's 42-day readiness floor are rejected at startup, because a
+window shorter than the floor would refuse every product a forecast, silently
+and forever.
+
 **Why 0.3, and why it doesn't need to be exact.** M6's two calibrating shapes
 (§ below) are a steady seller at ~18.6/week (measured; see §8 item 1) —
 which sells close to every day,
@@ -228,13 +243,37 @@ product every single period.
 > it replaces (a + ½(b−a)), and closing the rest of the gap is what a Holt
 > model would be for.
 >
-> **Seasonality is still not detected.** The trend half of "trend/seasonality
-> detection" is done; the seasonal half is not, and M6 seeds a shape it calls
-> "seasonal or trending" that is implemented purely as a trend. Nothing in
-> this system currently distinguishes a product with a weekly or annual cycle
-> from a flat one, so such a product gets a `moving_average` over its whole
-> history and its peaks and troughs average out. That is a real gap, not a
-> resolved one.
+> **Seasonality is an OPEN REQUIREMENT, not a recorded limitation.** The trend
+> half of "trend/seasonality detection" is done; the seasonal half is not, and
+> M6 seeds a shape it calls "seasonal or trending" that is implemented purely
+> as a trend. No method here models a cycle, so a genuinely seasonal product
+> gets its peaks and troughs averaged flat — a reorder point that is right for
+> an average week of the year and wrong, in both directions at different times,
+> exactly when it matters.
+>
+> **This must be resolved before M7 is called complete.** It is not a permanent
+> asterisk and must not become one. Until it is, the gap is *gated* rather than
+> merely noted:
+>
+> - `DemandSeries.seasonalityIndicator()` measures **detrended** autocorrelation
+> at candidate cycle lengths (7, 14, 30, 91, 182, 365 days), reporting how
+> strongly the part of the series the trend does *not* explain repeats itself.
+> Detrending first is what makes it mean anything — raw autocorrelation is high
+> at every lag for any trending series, so without it every growing product
+> would look seasonal.
+> - Above `MethodSelector.SEASONALITY_THRESHOLD` (0.35),
+> `Selection.isSeasonalitySuspected()` is set and the forecast's reorder point
+> carries an explicit caveat **in the API response**, not only here.
+> - It detects *that* a cycle exists, never which one. Detecting seasonality is
+> a much cheaper problem than forecasting it, and the honest thing to do with
+> the gap between them is say so to the person acting on the number.
+>
+> Calibration, measured across five seeds of M6's data: every seeded shape lands
+> between 0.026 and 0.189, and a constructed weekly cycle lands far above 0.35.
+> Deliberately **not** the textbook 2/√n significance line (~0.14 at 212 days) —
+> ordinary noise crosses that often enough that the caveat would appear on
+> products that are not seasonal at all, and a warning that shows up everywhere
+> is one nobody reads.
 
 **`ml_model` stays unused.** `forecast_method` already has an `ml_model`
 value in the applied `V1` enum — future-proofing, not a green light. Per §7,

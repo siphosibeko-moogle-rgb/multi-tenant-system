@@ -31,9 +31,27 @@ import com.example.inventory.forecasting.DemandSeries.Day;
 public class DemandSeriesRepository {
 
     private final JdbcTemplate jdbc;
+    private final ForecastingProperties properties;
 
-    public DemandSeriesRepository(@Qualifier("appDataSource") DataSource appDataSource) {
+    public DemandSeriesRepository(@Qualifier("appDataSource") DataSource appDataSource,
+                                  ForecastingProperties properties) {
         this.jdbc = new JdbcTemplate(appDataSource);
+        this.properties = properties;
+    }
+
+    /**
+     * The trailing window a forecast sees, in days.
+     *
+     * <p>Read through a method rather than inlined at each query so that making
+     * it per-tenant later is a change to <em>where the number comes from</em>
+     * and not a change to every caller. A configuration property is
+     * per-deployment: it can be retuned without a redeploy, but it cannot yet
+     * differ between two tenants on the same instance. A tenant selling fresh
+     * produce and one selling furniture genuinely want different windows, and
+     * when that matters this method grows a lookup.
+     */
+    private int windowDays() {
+        return properties.historyWindowDays();
     }
 
     /** Empty series (no rows) if the product has never been rolled up. */
@@ -42,13 +60,17 @@ public class DemandSeriesRepository {
                 SELECT day, units_sold, had_stockout
                 FROM demand_daily
                 WHERE product_id = ? AND location_id = ?
+                  AND day > (
+                      SELECT max(day) FROM demand_daily
+                      WHERE product_id = ? AND location_id = ?
+                  ) - CAST(? AS integer)
                 ORDER BY day
                 """,
                 (rs, rowNum) -> new Day(
                         rs.getObject("day", java.time.LocalDate.class),
                         rs.getBigDecimal("units_sold"),
                         rs.getBoolean("had_stockout")),
-                productId, locationId);
+                productId, locationId, productId, locationId, windowDays());
         return new DemandSeries(productId, locationId, days);
     }
 
@@ -63,8 +85,14 @@ public class DemandSeriesRepository {
         record Row(UUID productId, UUID locationId, Day day) {
         }
         List<Row> rows = jdbc.query("""
+                WITH windowed AS (
+                    SELECT product_id, location_id, day, units_sold, had_stockout,
+                           max(day) OVER (PARTITION BY product_id, location_id) AS last_day
+                    FROM demand_daily
+                )
                 SELECT product_id, location_id, day, units_sold, had_stockout
-                FROM demand_daily
+                FROM windowed
+                WHERE day > last_day - CAST(? AS integer)
                 ORDER BY product_id, location_id, day
                 """,
                 (rs, rowNum) -> new Row(
@@ -72,7 +100,8 @@ public class DemandSeriesRepository {
                         rs.getObject("location_id", UUID.class),
                         new Day(rs.getObject("day", java.time.LocalDate.class),
                                 rs.getBigDecimal("units_sold"),
-                                rs.getBoolean("had_stockout"))));
+                                rs.getBoolean("had_stockout"))),
+                windowDays());
 
         List<DemandSeries> series = new ArrayList<>();
         UUID currentProduct = null;
