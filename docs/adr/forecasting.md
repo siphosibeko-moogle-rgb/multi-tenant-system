@@ -171,6 +171,71 @@ trend/seasonality detection, not a silent default to plain
 `moving_average` that would flatly under- or over-forecast a trending
 product every single period.
 
+> **RESOLVED in M7 step 2, with an implementation and real data to test it
+> against — which is the condition this was waiting on.**
+>
+> `MethodSelector` measures `relativeTrend`: an ordinary least-squares slope
+> over the eligible days, multiplied by the window length and divided by the
+> mean, so it reads as "the trend line rises by this much of a mean level
+> across the window". Relative rather than raw, so one threshold serves every
+> product — a slope of 0.01/day is a strong trend at 0.2/day and noise at
+> 30/day.
+>
+> | `|relativeTrend|` | Method |
+> |---|---|
+> | ≤ 0.5 | `moving_average` |
+> | > 0.5 | `weighted_moving_average` |
+>
+> Absolute value, so a collapsing product is caught as well as a growing one.
+> A flat mean that keeps quoting last quarter's rate for a dying product
+> recommends reorders nobody will sell, and that is the more urgent of the two.
+>
+> **Calibration, measured over five RNG seeds of M6's 30-week data** (see
+> `ForecastRoutingSeedDataTest`, which prints the matrix):
+>
+> | shape | observed `relativeTrend` range |
+> |---|---|
+> | steady | −0.158 … +0.113 |
+> | stockout | −0.376 … −0.115 |
+> | trending | +1.498 … +1.712 |
+>
+> The gap runs from 0.376 to 1.498 and 0.5 sits inside it. **Low in the gap
+> rather than centred, on purpose**, because the two errors are not
+> symmetric: on a flat series the weighted average and the plain mean agree
+> to within 0.001 (`MethodSelectorTest
+> .misroutingAFlatSeriesToTheWeightedAverageIsCheap`), so a false positive
+> costs almost nothing — while a ramp routed to a flat mean is precisely the
+> failure this paragraph forbids. When the costs are lopsided the line
+> belongs on the cheap side. It also leaves room for real products that
+> trend less dramatically than M6's synthetic one, which quadruples its rate
+> by construction.
+>
+> The stockout shape's −0.376 is the closest non-trending case, and it is a
+> genuine level shift rather than noise: M6 sells that product harder before
+> its outage than after its restock, and with the censored days removed the
+> two regimes sit next to each other.
+>
+> **`exponential_smoothing` stays unselected.** For a flat series it is a
+> slower `moving_average`; for a trending one, *single* exponential smoothing
+> lags a ramp the same way a plain mean does — it needs a trend term (Holt) to
+> compete with the weighted average, and adding Holt is a modelling decision,
+> not a wiring one. Same reasoning as `ml_model` below: an enum slot existing
+> is not a decision that it should be filled.
+>
+> **Known limitation, recorded rather than hidden:** a linear weighting over a
+> long window still lags a ramp — for a straight ramp from a to b it lands
+> near a + ⅔(b−a) rather than at b. It is strictly better than the plain mean
+> it replaces (a + ½(b−a)), and closing the rest of the gap is what a Holt
+> model would be for.
+>
+> **Seasonality is still not detected.** The trend half of "trend/seasonality
+> detection" is done; the seasonal half is not, and M6 seeds a shape it calls
+> "seasonal or trending" that is implemented purely as a trend. Nothing in
+> this system currently distinguishes a product with a weekly or annual cycle
+> from a flat one, so such a product gets a `moving_average` over its whole
+> history and its peaks and troughs average out. That is a real gap, not a
+> resolved one.
+
 **`ml_model` stays unused.** `forecast_method` already has an `ml_model`
 value in the applied `V1` enum — future-proofing, not a green light. Per §7,
 it doesn't get used until the naive-baseline comparison shows the simpler
