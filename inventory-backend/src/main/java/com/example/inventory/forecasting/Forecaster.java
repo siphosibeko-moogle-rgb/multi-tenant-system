@@ -97,6 +97,9 @@ public class Forecaster {
             BigDecimal safetyStock,
             LeadTime leadTime,
             BigDecimal serviceLevel,
+            BigDecimal confidence,
+            LocalDate historyFrom,
+            LocalDate historyTo,
             boolean seasonalitySuspected) {
 
         public ForecastMethod method() {
@@ -106,6 +109,52 @@ public class Forecaster {
         public boolean hasReorderPoint() {
             return reorderPoint != null;
         }
+    }
+
+    /**
+     * How much to trust this forecast, 0–1, for the UI to show alongside it.
+     *
+     * <p><strong>A heuristic, not an ADR number.</strong> The contract declares
+     * {@code confidence} as nullable with the description "0–1. Low values mean
+     * thin or erratic history; show it in the UI", and neither the ADR nor
+     * {@code MILESTONES.md} defines how to compute one. This composes the three
+     * things that actually make a forecast here less trustworthy, each bounded
+     * so no single factor can drive it to zero on its own:
+     *
+     * <ul>
+     *   <li><strong>How much evidence</strong> — selling days, saturating at 30.
+     *       Ten is the bare readiness minimum; thirty is a comfortable one.</li>
+     *   <li><strong>How steady</strong> — {@code 1 / (1 + stddev/mean)}. A
+     *       clockwork product scores 1; one whose day-to-day spread equals its
+     *       mean scores 0.5.</li>
+     *   <li><strong>Whether a cycle is suspected</strong> — a flat 0.6 when it
+     *       is, because every method available averages a cycle flat and the
+     *       number really is less reliable, not merely caveated.</li>
+     * </ul>
+     *
+     * <p>Null for {@code insufficient_data}: there is no forecast to be
+     * confident about, and a low-but-present number would invite reading the
+     * absent reorder point as merely uncertain rather than absent.
+     */
+    private BigDecimal confidenceFor(Selection selection, BigDecimal avgDaily,
+                                     BigDecimal stddev) {
+        BigDecimal evidence = BigDecimal.valueOf(
+                        Math.min(selection.nonZeroEligibleDays(), 30))
+                .divide(BigDecimal.valueOf(30), DemandSeries.MC);
+
+        BigDecimal steadiness = BigDecimal.ONE;
+        if (avgDaily.signum() > 0) {
+            BigDecimal coefficientOfVariation = stddev.divide(avgDaily, DemandSeries.MC);
+            steadiness = BigDecimal.ONE.divide(
+                    BigDecimal.ONE.add(coefficientOfVariation), DemandSeries.MC);
+        }
+
+        BigDecimal seasonal = selection.isSeasonalitySuspected()
+                ? new BigDecimal("0.6") : BigDecimal.ONE;
+
+        return evidence.multiply(steadiness, DemandSeries.MC)
+                .multiply(seasonal, DemandSeries.MC)
+                .setScale(3, RoundingMode.HALF_UP);
     }
 
     public Forecast forecast(UUID productId, UUID locationId) {
@@ -125,7 +174,8 @@ public class Forecaster {
             // (step 4) still has to say something real about why.
             return new Forecast(series.productId(), series.locationId(), selection,
                     BigDecimal.ZERO, BigDecimal.ZERO, horizon, BigDecimal.ZERO,
-                    onHand, null, null, null, null, null, serviceLevel, false);
+                    onHand, null, null, null, null, null, serviceLevel, null,
+                    series.firstDay(), series.lastDay(), false);
         }
 
         BigDecimal avgDaily = DemandSeries.stored(
@@ -157,6 +207,7 @@ public class Forecaster {
         return new Forecast(series.productId(), series.locationId(), selection,
                 avgDaily, stddev, horizon, forecastQty, onHand, daysOfCover,
                 projectedStockout, reorderPoint, safetyStock, leadTime.orElse(null),
-                serviceLevel, selection.isSeasonalitySuspected());
+                serviceLevel, confidenceFor(selection, avgDaily, stddev),
+                series.firstDay(), series.lastDay(), selection.isSeasonalitySuspected());
     }
 }

@@ -84,6 +84,48 @@ opposite of what `supplier_lead_time_observations` exists for. The fallback
 exists only because a brand-new supplier relationship has no observations
 yet, not because the promised figure is trusted once alternatives appear.
 
+### There are THREE sources, not two — settled in M7 step 3
+
+This section originally described two, and the schema has a third:
+`product_suppliers.lead_time_days`, commented in `V1` as "overrides supplier
+default". A per-product promise, for the real case of a supplier who ships
+most lines in a week and one particular line in a month.
+
+**Resolved ranking, highest first:**
+
+| Rank | Source | Kind |
+|---|---|---|
+| 1 | `avg(supplier_lead_time_observations.lead_time_days)`, at n ≥ 5 | measured |
+| 2 | `product_suppliers.lead_time_days`, when set | promised, per product |
+| 3 | `suppliers.lead_time_days` | promised, general |
+
+**The override refines the *promised* tier; it does not compete with the
+measured one.** That ordering is the whole decision, and the alternative is
+genuinely tempting — "overrides supplier default" reads like it should
+override everything. It must not. Ranking a hand-typed per-product number
+above real observations inverts this section's core principle: the system
+would go back to repeating what somebody once typed instead of what the
+supplier actually did, and it would do so most often on exactly the products
+somebody cared enough about to type a number for. A stale override would
+silently outrank a hundred measured deliveries.
+
+Note also that the measured figure is **necessarily per-supplier**:
+`supplier_lead_time_observations` is keyed on `(tenant_id, supplier_id)` with
+no product column, so a per-product measured average does not exist to be
+preferred even in principle. Ranks 2 and 3 are the only place per-product
+granularity can enter, and both are promises.
+
+**Which supplier, when a product has several.** `product_suppliers` allows
+many rows per product. The preferred one wins (`is_preferred`), then the
+oldest link. Deterministic on purpose — a reorder point that changed between
+runs because two suppliers tied would be indistinguishable from a real
+change in demand.
+
+**A product with no `product_suppliers` row has no lead time and therefore no
+reorder point.** Null, not a default. See §1's implementation note in
+`Forecaster`: substituting a plausible default produces a made-up reorder
+point indistinguishable from a real one.
+
 ---
 
 ## 3. Censored demand: the stockout exclusion, and the spiral it prevents
