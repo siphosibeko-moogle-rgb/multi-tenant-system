@@ -446,9 +446,12 @@ and this system records neither.
 "urgent" means "you run out before an order can land", and a three-day
 supplier and a three-week one make that the same shelf level's problem at
 very different times.
-- `forecast_accuracy` scored against the naive "same as last period" baseline
-from day one (`docs/adr/forecasting.md` §7) — not added later once a real
-model exists to justify
+- ~~`forecast_accuracy` scored against the naive "same as last period"
+baseline from day one~~ — done, step 5. `ForecastAccuracyJob` scores each
+elapsed forecast and, in the same pass, a synthetic `naive` forecast row
+(ADR §7 shape (a), the enum value `V9` added) over the same period. Results
+group **by method**, so naive can be compared against each bucket rather
+than against one blended average.
 
 **Done when**
 - The steady seller (~18.6/week) reports **~2.65/day** and a sensible
@@ -485,9 +488,35 @@ from the 3–8 its receipts actually achieved, so a bug reading observations
 anyway would be obviously wrong rather than plausibly close. The 21-vs-3
 proportionality is asserted on the real steady-seller series: reorder
 point **11.54** at 3 days versus **65.16** at 21.
-- `forecast_accuracy` rows appear after the evaluation job runs, each scored
-against the naive "same as last period" baseline over the same period — not
-merely computed and left uncompared
+- ~~`forecast_accuracy` rows appear after the evaluation job runs, each
+scored against the naive baseline over the same period — not merely
+computed and left uncompared~~ — done, step 5, and **the mechanism is
+wired but its numbers are not yet meaningful.**
+
+**Real accuracy figures need real elapsed time, and nothing can shortcut
+that.** A forecast can only be scored once its whole horizon has passed —
+30 days by default — so a system that started today has nothing to score
+until next month, and a MAPE computed over two evaluations says nothing
+about a method. The figures become worth reading after M7 has been
+running for a few horizons; before that, treat an apparent win or loss
+against naive as noise. Tests use synthetic before/after data for exactly
+this reason: real history cannot be fast-forwarded, and building the
+fixture out of seeded history would only test the seeder.
+
+**Do not "fix" an empty `forecast_accuracy` table on a fresh install.** It
+is empty because nothing has elapsed yet, which is correct. The scoring
+itself is verified by `ForecastAccuracyTest` against hand-checkable
+numbers — a forecast of 45 against an actual of 50 scores 10.00%, and the
+naive baseline quoting the prior period's 30 scores 40.00%.
+
+Two properties worth knowing about the implementation:
+- **`abs_pct_error` is null when the actual is zero**, not a large finite
+number. MAPE is undefined against zero, and a stand-in would dominate
+every average it entered — and intermittent products, the bucket §7 most
+wants compared, produce zero periods routinely.
+- **`insufficient_data` forecasts are never scored.** Treating a withheld
+forecast as a prediction of zero would put a 100% error on every new
+product and drag down whichever method it eventually gets.
 - ~~**Picked up from M6, not re-derived:** running `DemandRollupJob` against
 M6's seed data produces `demand_daily` rows with genuine zero-demand days
 for the steady seller, and `had_stockout: true` on the stockout product's
