@@ -287,13 +287,21 @@ each one.
 **Build**
 - A generator producing 6–12 months of synthetic history across deliberately
 different demand shapes:
-- **steady seller, roughly 20/week with low variance** — the worked example
-(matches the plain-English explanation in `docs/adr/forecasting.md` §6:
-"You sell about 20 a week...")
+- **steady seller, ~18.6/week (2.65/day) with low variance** — the worked
+example. **Measured, not aspirational**: the generator sells on ~87% of
+days at 2–4 units, and M7 step 1's rollup reconciles that to 562 units
+over 212 days against the ledger. Earlier text here said 20/week; see
+`docs/adr/forecasting.md` §8 item 1 before changing it back.
 - **one with a genuine stockout period** in its history, so the
 `had_stockout` exclusion (`docs/adr/forecasting.md` §3) is actually
 testable — a seed set with no stockout days can't tell "excludes correctly"
-from "happens to average right by luck"
+from "happens to average right by luck". **Measured in M7 step 1: the
+outage is ~64 contiguous days, not the 5 this generator scripts** — the
+40-unit opening stock drains by ~day 22 (`sellUpTo` caps each sale to
+what is on the shelf), the shelf then sits empty until the scripted
+refused-sale window at ~day 84 and the restock at ~day 89, so only the
+last five days carry confirmed refusals and the preceding ~59 are silent
+emptiness.
 - **intermittent, selling on roughly 1 day in 10** — this breaks naive
 averages and is what routes `MethodSelector` to Croston
 - **seasonal or trending**
@@ -410,8 +418,10 @@ from day one (`docs/adr/forecasting.md` §7) — not added later once a real
 model exists to justify
 
 **Done when**
-- The steady seller (20/week) reports ~2.9/day and a sensible days-of-cover
-figure
+- The steady seller (~18.6/week) reports **~2.65/day** and a sensible
+days-of-cover figure. That figure is measured from the seed data and
+reconciled against the ledger (step 1), not derived from prose — see
+`docs/adr/forecasting.md` §8 item 1 for why it is written down twice.
 - The intermittent product does **not** get a naive-average forecast — the
 selector routes it to Croston
 - A product below the readiness threshold (`docs/adr/forecasting.md` §5 —
@@ -462,13 +472,15 @@ rule firing on the one product it must not fire on.
 
 **Two findings about M6's seed data, recorded rather than worked around:**
 
-1. **The steady seller measures ~2.65/day (18.6/week), not the ~2.9/day
-(20/week) this milestone's own "Done when" bullet states.** That is the
-generator behaving as coded — ~87% of days × 2–4 units ≈ 2.7/day — not a
-rollup error; the reconciliation test proves `demand_daily` totals equal
-the ledger's own figure exactly. So either the seeder's rate or the
-milestone's stated figure should move. See `docs/adr/forecasting.md` §8
-item 1, which already flagged that this number changed once.
+1. **The steady seller measures ~2.65/day (18.6/week); the prose said
+~2.9/day (20/week). RESOLVED — the prose moved, the generator did not.**
+That rate is the generator behaving as coded — ~87% of days × 2–4 units ≈
+2.7/day — not a rollup error; the reconciliation test proves
+`demand_daily`'s totals equal the ledger's own figure exactly. Changing
+working seed data to match stale prose would be backwards, so the M6 and
+M7 figures above were corrected instead. **This figure has now drifted
+twice** — see `docs/adr/forecasting.md` §8 item 1, and read it before
+"correcting" 2.65 back to anything else.
 2. **The stockout product's outage is ~64 contiguous days, not the five
 M6 scripts.** `sellUpTo` caps each sale to what is on the shelf, so the
 40-unit opening stock is drawn down by roughly day 22 and the shelf then
@@ -481,12 +493,15 @@ censored days to test against, and the flagged run ends exactly on the
 receipt's own date — but it means "the stockout period" is 30% of that
 product's history rather than a brief dip.
 
-**Open question, raised rather than answered (CLAUDE.md §12):** who runs
-the rollup across every tenant. `DemandRollupJob` deliberately never binds
-a tenant and never enumerates them, so today it runs only on a bound
-request thread. A scheduled cross-tenant job needs either a per-tenant
-service credential or a second documented exception to T1. Widening T1 to
-make a cron job convenient is exactly what §12 forbids.
+**Named gap — scheduled cross-tenant rollup is not built.** Recompute is
+request-bound via `POST /forecasts/recompute`; a scheduled cross-tenant
+rollup needs a documented T1 exception or a per-tenant credential — not yet
+built. Tracked here the same way the `Idempotency-Key` gap was tracked
+before M4 closed it, and deliberately not worked around: `DemandRollupJob`
+never binds a tenant and never enumerates them, so it can only run on an
+already-bound thread. CLAUDE.md §12 exists precisely so nobody bolts a
+bypass onto T1 under deadline pressure; the cron story is a decision to
+make deliberately, not a side effect of needing a nightly job.
 
 ---
 

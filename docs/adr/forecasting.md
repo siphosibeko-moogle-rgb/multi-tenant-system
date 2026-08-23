@@ -153,7 +153,8 @@ days), over the trailing history window, where "eligible" is the same
 had-stockout exclusion as §3.
 
 **Why 0.3, and why it doesn't need to be exact.** M6's two calibrating shapes
-(§ below) are a steady seller at ~20/week — which sells close to every day,
+(§ below) are a steady seller at ~18.6/week (measured; see §8 item 1) —
+which sells close to every day,
 `nonzero_fraction ≈ 1.0` — and an intermittent product selling roughly 1 day
 in 10, `nonzero_fraction ≈ 0.1`. Both sit far from 0.3 on either side. The
 line only has to fall somewhere in that gap; it doesn't have to be
@@ -227,7 +228,7 @@ M7 later:**
 
 | M6 shape | Crosses the bar at roughly | Note |
 |---|---|---|
-| Steady, 20/week | Week 6 (day-count floor, not the non-zero floor — it clears 10 non-zero days by ~day 4) | The two conditions are independent; a very active product is still gated by the calendar floor. |
+| Steady, ~18.6/week | Week 6 (day-count floor, not the non-zero floor — it clears 10 non-zero days by ~day 4) | The two conditions are independent; a very active product is still gated by the calendar floor. |
 | Stockout period | Same as steady, once outside the outage | Outage days are already excluded from "eligible," so they can't accidentally count toward readiness either. |
 | Intermittent, ~1/10 days | ~Week 14 (100 calendar days to accumulate 10 non-zero days at that rate) | Genuinely slower than the steady seller, on purpose. M6 must seed enough calendar time (it already commits to 6–12 months) for this shape to clear the bar at all, not just for the steady one. |
 | Seasonal / trending | Same as steady, assuming regular sales | — |
@@ -318,6 +319,26 @@ visibility into whatever "the brief" originally meant by 7–8/week — I've
 updated `MILESTONES.md` to 20/week because that's what was explicitly
 specified here, but the discrepancy should be noted rather than assumed to
 be a correction.
+
+> **This figure has now drifted twice, and the second time it was measured.**
+> M7 step 1 rolled `stock_movements` up into `demand_daily` against the real
+> 30-week generator and got **2.65/day (~18.6/week)** — 562 units over 212
+> days — for the shape everything above calls "20/week". That is the seeder
+> behaving exactly as coded (~87% of days × 2–4 units ≈ 2.7/day), and
+> `DemandRollupSeedDataTest.theRollupReconcilesWithTheLedger` proves the
+> rollup is faithful to the ledger, so the gap is in the prose rather than in
+> the data or the code.
+>
+> **`MILESTONES.md` was corrected to 2.65/day; `TenantSeeder` was
+> deliberately left alone.** Changing working, verified seed data so it
+> agrees with a number written before anything measured it is backwards — it
+> would discard the one figure here that came from an observation rather than
+> from an assumption.
+>
+> So: **7–8/week → 20/week → 18.6/week measured.** If a future reader finds
+> the code and the prose disagreeing about this number again, the code is the
+> one that has been checked. Do not "correct" 2.65 back to 20 on the strength
+> of the older sentences above — they are kept only so the history is legible.
 2. **M7's existing "Done when" bullet inherits the old number.** *"The
 steady seller reports ~1.1/day"* is `7–8/week ÷ 7`. Updated in lockstep to
 `~2.9/day` (`20/week ÷ 7`) so M6 and M7 don't quote two different figures for

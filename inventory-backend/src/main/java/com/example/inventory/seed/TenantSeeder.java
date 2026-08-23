@@ -180,12 +180,18 @@ public class TenantSeeder {
     // ------------------------------------------------------------------
 
     /**
-     * ~20/week, low variance — the ADR's worked example (§6: "You sell about
-     * 20 a week..."). Sells on ~90% of days at a narrow 2-4 unit range,
+     * The ADR's worked example (§6: "You sell about N a week..."), at low
+     * variance. Sells on ~90% of days at a narrow 2-4 unit range,
      * which is deliberately NOT 100%: a generator that sells every single
      * day never produces a zero-demand day, and "demand_daily includes
      * zero-demand days" is M6's own most-common-bug warning. The 10% of
      * silent days are exactly that gap.
+     *
+     * <p><strong>The rate this actually produces is ~2.65/day (~18.6/week)</strong>,
+     * measured by M7 step 1's rollup and reconciled against the ledger — 562
+     * units over 212 days. Earlier prose called this shape "20/week"; that
+     * number was written before anything measured it. Do not retune the
+     * numbers below to chase it. See {@code docs/adr/forecasting.md} §8 item 1.
      *
      * <h2>Why this restocks itself, reactively, uncapped</h2>
      *
