@@ -214,7 +214,7 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
         // point is that the window value drives the query, and this is the
         // cheapest way to prove it does.
         DemandSeriesRepository narrow = new DemandSeriesRepository(
-                appDataSource, new ForecastingProperties(60));
+                appDataSource, new ForecastingProperties(60, 30));
 
         DemandSeries full = seriesFor(tenant, "steady");
         DemandSeries trimmed = asTenant(tenant, () -> narrow.load(

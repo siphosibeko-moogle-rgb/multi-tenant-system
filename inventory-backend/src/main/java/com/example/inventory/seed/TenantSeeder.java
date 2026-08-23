@@ -54,7 +54,10 @@ import com.example.inventory.tenancy.TenantContext;
  * exercises directly, at a shorter window, so the mechanism is proven by a
  * fast test rather than only by a slow manual run.
  *
- * <h2>Two deliberate exceptions to "no raw SQL"</h2>
+ * <h2>Three deliberate exceptions to "no raw SQL"</h2>
+ *
+ * <p>Each is a case where no service exists to call, never a shortcut around
+ * one that does.
  *
  * <ol>
  * <li>Suppliers. M5 built {@code GET /suppliers/{supplierId}} only —
@@ -68,6 +71,11 @@ import com.example.inventory.tenancy.TenantContext;
  * PO itself still goes through {@code create}/{@code submit} for real: this
  * patches one timestamp afterward, on a row the real service created,
  * exercising the real guard and lock. See {@link #seedSupplierHistory}.
+ * <li>{@code product_suppliers}. Added in M7 step 3: nothing in the API links
+ * a product to a supplier, and a reorder point needs a lead time, which comes
+ * from a supplier ({@code docs/adr/forecasting.md} §2). Without the link every
+ * seeded reorder point would be null for want of a supplier. See
+ * {@link #linkProductToSupplier}.
  * </ol>
  */
 @Component
@@ -163,6 +171,32 @@ public class TenantSeeder {
             // narrative-sensitive stock timing to collide with.
             seedSupplierHistory(supplierId, locationId, List.of(steadyId, intermittentId, trendingId),
                     windowStart, today, new Random(rng.nextLong()));
+
+            // A SECOND supplier, deliberately below ADR §2's n>=5 trust
+            // threshold, so both halves of the lead-time rule are exercisable
+            // against real seeded data rather than only the observed half.
+            //
+            // Its promised 21 days is set far from the 3-8 range its two real
+            // receipts actually achieve, and far from the first supplier's 7,
+            // so a reorder point computed from the promised figure is
+            // unmistakably distinguishable from one computed from observations.
+            // If a bug made the fallback read observations anyway, the number
+            // would be obviously wrong rather than plausibly close.
+            UUID newSupplierId = createSupplier(tenantId, "Riverbend Provisions " + slug, 21);
+            seedSupplierHistory(newSupplierId, locationId, List.of(seasonalId),
+                    windowStart, today, new Random(rng.nextLong()), 2);
+
+            // Who supplies what. Dead stock and the brand-new product are left
+            // unlinked on purpose: nobody keeps a supplier on file for
+            // discontinued stock, "just started carrying this, stocked by hand"
+            // is brand-new's own story (see seedSupplierHistory), and M7 needs a
+            // product with no supplier to prove a reorder point is withheld
+            // rather than invented when there is no lead time to be had.
+            linkProductToSupplier(tenantId, steadyId, supplierId, new BigDecimal("8.00"));
+            linkProductToSupplier(tenantId, intermittentId, supplierId, new BigDecimal("12.00"));
+            linkProductToSupplier(tenantId, stockoutId, supplierId, new BigDecimal("7.00"));
+            linkProductToSupplier(tenantId, trendingId, supplierId, new BigDecimal("6.00"));
+            linkProductToSupplier(tenantId, seasonalId, newSupplierId, new BigDecimal("5.00"));
 
             Map<String, UUID> shapes = new LinkedHashMap<>();
             shapes.put("steady", steadyId);
@@ -439,7 +473,20 @@ public class TenantSeeder {
      */
     void seedSupplierHistory(UUID supplierId, UUID locationId, List<UUID> productIds,
                              LocalDate windowStart, LocalDate today, Random rng) {
-        int receiptCount = 6;
+        seedSupplierHistory(supplierId, locationId, productIds, windowStart, today, rng, 6);
+    }
+
+    /**
+     * @param receiptCount how many purchase orders this supplier completes.
+     *                     6 for the established supplier, which puts it above
+     *                     {@code docs/adr/forecasting.md} §2's n>=5 threshold so
+     *                     its measured lead time is trusted; 2 for the new
+     *                     relationship, which keeps it below so its promised
+     *                     figure is used instead. Both branches of §2 therefore
+     *                     exist in real seed data rather than only in a fixture.
+     */
+    void seedSupplierHistory(UUID supplierId, UUID locationId, List<UUID> productIds,
+                             LocalDate windowStart, LocalDate today, Random rng, int receiptCount) {
         long totalDays = ChronoUnit.DAYS.between(windowStart, today);
 
         for (int i = 0; i < receiptCount; i++) {
@@ -493,6 +540,33 @@ public class TenantSeeder {
                 VALUES (?, ?, ?, ?)
                 """, supplierId, tenantId, name, promisedLeadTimeDays);
         return supplierId;
+    }
+
+    /**
+     * Links a product to the supplier it is bought from.
+     *
+     * <p><strong>The third documented exception to "no raw SQL"</strong>, added
+     * in M7 step 3 for the same reason as {@link #createSupplier}: nothing in
+     * the API creates a {@code product_suppliers} row. M5 built supplier reads
+     * only, and no endpoint links a product to a supplier, so there is no real
+     * service to call.
+     *
+     * <p>The link matters because a reorder point needs a lead time, a lead time
+     * comes from a supplier ({@code docs/adr/forecasting.md} §2), and
+     * {@code product_suppliers} is the schema's own answer to which supplier a
+     * product has. Without it every reorder point in the seed data would be null
+     * for want of a supplier, and M7's whole §2 branch would be untestable
+     * against real data.
+     *
+     * <p>Deliberately NOT applied to every product — see the call site.
+     */
+    private void linkProductToSupplier(UUID tenantId, UUID productId, UUID supplierId,
+                                       BigDecimal unitCost) {
+        jdbc.update("""
+                INSERT INTO product_suppliers
+                    (tenant_id, product_id, supplier_id, unit_cost, is_preferred)
+                VALUES (?, ?, ?, ?, true)
+                """, tenantId, productId, supplierId, unitCost);
     }
 
     // ------------------------------------------------------------------

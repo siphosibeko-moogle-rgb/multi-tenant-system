@@ -95,6 +95,12 @@ app:
     # forecast, silently and forever.
     history-window-days: 365
 
+    # How far ahead forecast_qty projects. Not an ADR number — the contract
+    # requires horizonDays and forecastQty but fixes no period, so 30 days is
+    # a choice: the horizon behind "how much will I sell next month". The
+    # reorder point does NOT use this; it uses the supplier's lead time.
+    horizon-days: 30
+
 logging:
   level:
     org.flywaydb: info
