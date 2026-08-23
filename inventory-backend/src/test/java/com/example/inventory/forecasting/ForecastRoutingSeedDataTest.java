@@ -181,8 +181,11 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
         System.out.println(report);
 
         assertThat(byShape.keySet())
-                .as("all six M6 shapes must be present, or a shape is silently going unrouted")
-                .hasSize(6);
+                .as("all seven M6 shapes must be present, or a shape is silently going "
+                        + "unrouted. The seventh — the weekend cycle — was added in M7 step 2 "
+                        + "so the seasonality gate has real generated history to prove itself "
+                        + "against rather than only a constructed fixture.")
+                .hasSize(7);
     }
 
     @Test
@@ -233,11 +236,11 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
     }
 
     @Test
-    @DisplayName("no M6 shape trips the seasonality caveat — none of them is seasonal")
+    @DisplayName("no NON-cyclical M6 shape trips the seasonality caveat")
     void noSeededShapeIsFlaggedSeasonal() throws Exception {
         for (String shape : List.of("steady", "intermittent", "stockout", "trending")) {
             forEachSeed(shape, (seed, selection) -> assertThat(selection.isSeasonalitySuspected())
-                    .as("seed %d, %s: M6 seeds no cyclical shape, so a caveat here would be a "
+                    .as("seed %d, %s: none of these is cyclical, so a caveat here would be a "
                             + "false positive — and the trending product is the one that would "
                             + "trip it if the autocorrelation were not detrended first. "
                             + "Observed indicator %s against a %s threshold.",
@@ -245,6 +248,37 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
                             MethodSelector.SEASONALITY_THRESHOLD)
                     .isFalse());
         }
+    }
+
+    @Test
+    @DisplayName("the weekly-cycle product IS flagged — on real generated history, every seed")
+    void theCyclicalShapeIsFlaggedSeasonal() throws Exception {
+        forEachSeed("seasonal", (seed, selection) -> {
+            assertThat(selection.isReady())
+                    .as("seed %d: it must clear readiness first — an insufficient_data product "
+                            + "carries no reorder point to caveat, so the flag would be moot "
+                            + "and this test would prove nothing", seed)
+                    .isTrue();
+
+            assertThat(selection.method())
+                    .as("seed %d: it sells most days and does not trend, so it routes to a "
+                            + "plain moving_average — which is exactly the problem. The method "
+                            + "looks entirely reasonable and averages the weekend peaks flat. "
+                            + "Observed nonzeroFraction %s, trend %s.",
+                            seed, round(selection.nonzeroFraction(), 3),
+                            round(selection.relativeTrend(), 3))
+                    .isEqualTo(ForecastMethod.MOVING_AVERAGE);
+
+            assertThat(selection.isSeasonalitySuspected())
+                    .as("seed %d: and the caveat must fire on REAL generated history, not just "
+                            + "the constructed fixture in MethodSelectorTest. This is the one "
+                            + "place the seasonality gate could not be tested end to end until "
+                            + "M6 grew a cyclical shape. Observed indicator %s against a %s "
+                            + "threshold.",
+                            seed, round(selection.seasonalityIndicator(), 3),
+                            MethodSelector.SEASONALITY_THRESHOLD)
+                    .isTrue();
+        });
     }
 
     @Test

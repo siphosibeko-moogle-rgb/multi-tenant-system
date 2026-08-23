@@ -307,6 +307,14 @@ averages and is what routes `MethodSelector` to Croston
 - **seasonal or trending**
 - **dead stock**, no sales in months — must still be seeded through a full
 window; it stays `insufficient_data` forever and that's the point (§5)
+- **a genuine weekly cycle** — quiet weekdays, busy weekends, flat in trend.
+Added in M7 step 2, because M7 gates reorder points on
+`seasonalityIndicator()` and until this existed that gate could only be
+proven against a hand-constructed fixture: none of the other six shapes is
+cyclical, and "seasonal or trending" below is implemented purely as a ramp.
+A gate nothing real exercises is a gate nobody finds out is broken. Weekly
+rather than annual because a 30-week window holds 30 weekly cycles and less
+than one annual one
 - **brand-new, under 2 weeks of history** — fails the readiness threshold
 outright
 
@@ -518,12 +526,16 @@ is told the number is not to be trusted for their product. It detects *that*
 a cycle exists, never which one — detecting seasonality is a far cheaper
 problem than forecasting it.
 
-Closing this means a method with a seasonal term, and M6's "seasonal or
-trending" shape being seeded as something genuinely cyclical rather than as
-a pure ramp — it is currently only the latter, so nothing in the seed data
-exercises the caveat end to end. Measured across five seeds, every M6 shape
-sits between 0.026 and 0.189, well under the threshold; the detection is
-proven against a constructed weekly cycle instead.
+**The detection is now proven end to end against real generated history.**
+M6 grew a seventh shape — a weekend-heavy weekly cycle — for exactly this.
+Measured across five seeds it scores **0.896–0.908** while every
+non-cyclical shape scores **0.026–0.189**, so the 0.35 threshold sits in the
+middle of a wide gap rather than near either edge. It routes to
+`moving_average`, which is the point: the method looks entirely reasonable
+and averages the weekend peaks flat, and only the caveat says otherwise.
+
+**What remains to close this** is a method with a seasonal term, so the
+number itself becomes right rather than merely flagged as wrong.
 
 **Named gap — scheduled cross-tenant rollup is not built.** Recompute is
 request-bound via `POST /forecasts/recompute`; a scheduled cross-tenant

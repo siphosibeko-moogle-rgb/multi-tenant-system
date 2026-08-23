@@ -1,6 +1,7 @@
 package com.example.inventory.seed;
 
 import java.math.BigDecimal;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -140,6 +141,7 @@ public class TenantSeeder {
             UUID stockoutId = createProduct(slug + "-stockout", "Popular Croissant", categoryId);
             UUID trendingId = createProduct(slug + "-trend", "Trending Cold Brew", categoryId);
             UUID deadId = createProduct(slug + "-dead", "Discontinued Fruitcake", categoryId);
+            UUID seasonalId = createProduct(slug + "-seasonal", "Weekend Party Platter", categoryId);
             UUID newId = createProduct(slug + "-new", "Brand New Sourdough", categoryId);
 
             UUID supplierId = createSupplier(tenantId, "Golden Wheat Supplies " + slug, 7);
@@ -149,6 +151,7 @@ public class TenantSeeder {
             seedStockoutProduct(stockoutId, supplierId, locationId, windowStart, today, new Random(rng.nextLong()));
             seedTrendingProduct(trendingId, locationId, windowStart, today, new Random(rng.nextLong()));
             seedDeadStock(deadId, locationId, windowStart);
+            seedSeasonalProduct(seasonalId, locationId, windowStart, today, new Random(rng.nextLong()));
             seedBrandNew(newId, locationId, today, new Random(rng.nextLong()));
 
             // "At least one purchase order per major product": the stockout
@@ -167,6 +170,7 @@ public class TenantSeeder {
             shapes.put("stockout", stockoutId);
             shapes.put("trending", trendingId);
             shapes.put("dead", deadId);
+            shapes.put("seasonal", seasonalId);
             shapes.put("new", newId);
 
             return new SeededTenant(tenantId, ownerId, locationId, supplierId, shapes);
@@ -292,6 +296,49 @@ public class TenantSeeder {
      * span, which is exactly what restricting the SALES to the last 10 days
      * produces.
      */
+    /**
+     * A genuine weekly cycle: quiet on weekdays, busy at the weekend.
+     *
+     * <p>Added in M7 step 2 for a specific reason. M7 gates reorder points on
+     * {@code DemandSeries.seasonalityIndicator()} — a seasonal product's peaks
+     * and troughs get averaged flat by every method the selector can choose, so
+     * its reorder point carries an explicit caveat. Until this shape existed,
+     * that detection could only be proven against a hand-constructed fixture:
+     * none of the other six shapes is cyclical, and M6's "seasonal or trending"
+     * shape is implemented purely as a ramp. A gate nothing real exercises is a
+     * gate nobody finds out is broken.
+     *
+     * <p>Weekly rather than annual because a 30-week window contains 30 weekly
+     * cycles and less than one annual one — a yearly shape could not be detected
+     * at this window length no matter how correct the detector.
+     *
+     * <p>Deliberately kept <em>flat</em> in trend and <em>frequent</em> in
+     * selling days, so it routes to {@code moving_average} and the caveat is the
+     * only thing distinguishing it. A shape that also trended would leave it
+     * ambiguous which mechanism the test was exercising.
+     */
+    void seedSeasonalProduct(UUID productId, UUID locationId, LocalDate start,
+                             LocalDate endExclusive, Random rng) {
+        stockUp(productId, locationId, start.minusDays(1), new BigDecimal(120), new BigDecimal("5.00"));
+        for (LocalDate date = start; date.isBefore(endExclusive); date = date.plusDays(1)) {
+            restockIfLow(productId, locationId, date, new BigDecimal("5.00"));
+
+            DayOfWeek dayOfWeek = date.getDayOfWeek();
+            boolean weekend = dayOfWeek == DayOfWeek.SATURDAY || dayOfWeek == DayOfWeek.SUNDAY;
+
+            // The amplitude is what makes the cycle detectable: a weekend sells
+            // roughly five times a weekday. A gentler cycle would be more
+            // realistic and less useful — the point of a fixture is to make one
+            // mechanism unambiguous, and a marginal signal would leave a failure
+            // meaning either "the detector broke" or "the data was borderline".
+            if (weekend) {
+                sell(productId, locationId, date, 8 + rng.nextInt(3));
+            } else if (rng.nextDouble() < 0.7) {
+                sell(productId, locationId, date, 1 + rng.nextInt(2));
+            }
+        }
+    }
+
     void seedBrandNew(UUID productId, UUID locationId, LocalDate today, Random rng) {
         LocalDate start = today.minusDays(10);
         stockUp(productId, locationId, start, new BigDecimal(30), new BigDecimal("9.00"));
