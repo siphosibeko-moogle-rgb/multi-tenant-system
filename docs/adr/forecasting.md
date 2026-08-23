@@ -404,6 +404,34 @@ It should be truthful about which lead time it's quoting — the observed
 figure and the promised one can disagree, and the sentence is the one place
 a shop owner ever sees the number, so it can't silently mix the two.
 
+**Implemented in M7 step 4 (`ForecastExplainer`), with three additions worth
+recording:**
+
+1. **The lead-time phrasing distinguishes measured from promised in words**,
+per the paragraph above: *"has been taking about 5.3 days to deliver
+(measured over 7 deliveries)"* versus *"quotes 21 days to deliver (their
+stated time — you have not had enough deliveries yet to measure the real
+one)"*. The sample size rides along with the measured one so the reader can
+judge how much to trust it.
+2. **The seasonal caveat (§4) is a sentence, not a flag.** A boolean nothing
+renders protects nobody, so a caveated forecast appends: *"Note: this
+product's sales repeat on a regular pattern — busier at some times than
+others — and this estimate averages the busy and quiet stretches together,
+so it cannot fully account for that pattern. Treat it as a rough guide: you
+will likely need more than this going into a busy stretch, and less coming
+out of one."* It is **additive** — everything the clean explanation says is
+still said — so the caveat qualifies the number rather than replacing it.
+3. **There are two strings, not one.** `ForecastDetail.explanation` answers
+"what do we think about this product"; `ReorderRecommendation.rationale`
+answers "why am I being told to act now, and how much do I order". Both
+carry the caveat, and the recommendation is the more important of the two,
+because it is where somebody actually decides to spend money.
+
+**The `insufficient_data` shortfall is quoted in *selling* days, not calendar
+days**, when that is the binding condition. "Six more days" would promise a
+date the system cannot keep: six more selling days at one sale a fortnight is
+three months away.
+
 ---
 
 ## 7. `forecast_accuracy` versus the naive baseline

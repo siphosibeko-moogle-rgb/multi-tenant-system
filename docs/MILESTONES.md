@@ -428,9 +428,24 @@ supplier default" — resolved as observed → per-product promise → supplier
 promise, so the override refines the *promised* tier rather than
 outranking measured evidence. Flagged in `LeadTimeResolver`'s Javadoc
 rather than silently picked (CLAUDE.md §1).
-- `ReorderService` producing recommendations with a plain-English rationale
-(template: `docs/adr/forecasting.md` §6) — required on every forecast,
-including `insufficient_data` ones
+- ~~`ReorderService` producing recommendations with a plain-English
+rationale — required on every forecast, including `insufficient_data`
+ones~~ — done, step 4. `ForecastExplainer` writes two strings: what we
+think about the product, and why it is on the reorder list. **The
+seasonal caveat is a sentence, not a flag** — a caveated recommendation
+says the product's sales "repeat on a regular pattern", that the estimate
+"averages the busy and quiet stretches together" and "cannot fully account
+for that pattern", and what to do about it. Asserted to differ from a
+clean one by a real sentence, not a marker.
+- **Order quantity is a choice, not an ADR number**:
+`(reorder_point + avg_daily_demand × horizon) − quantity_on_hand`. Ordering
+back only to the reorder point would put the product straight back on the
+list tomorrow. Not an EOQ — that needs an order cost and a holding cost,
+and this system records neither.
+- **Urgency is measured against the lead time**, not a fixed number of days:
+"urgent" means "you run out before an order can land", and a three-day
+supplier and a three-week one make that the same shelf level's problem at
+very different times.
 - `forecast_accuracy` scored against the naive "same as last period" baseline
 from day one (`docs/adr/forecasting.md` §7) — not added later once a real
 model exists to justify
@@ -445,11 +460,15 @@ seeds ~212 days, which fits inside 365, so the window trims nothing here.
 Measured 2.538–2.731 across five seeds, mean ~2.66.
 - The intermittent product does **not** get a naive-average forecast — the
 selector routes it to Croston
-- A product below the readiness threshold (`docs/adr/forecasting.md` §5 —
-under 42 days of history, or fewer than 10 non-zero eligible demand days)
-returns `method: insufficient_data`, a null `projectedStockoutOn`, a null
-`reorderPoint`, and a populated `explanation` saying so — it must not
-produce a confident number
+- ~~A product below the readiness threshold returns `method:
+insufficient_data`, a null `projectedStockoutOn`, a null `reorderPoint`,
+and a populated `explanation` saying so~~ — done, steps 3 and 4. Dead
+stock reads: *"Still learning Discontinued Fruitcake — 211 days of history
+so far, but it has not sold at all yet — about 10 days with a sale are
+needed before there is anything to forecast from. Until then a reorder
+level would be a guess rather than a forecast."* The shortfall is phrased
+in **selling** days, not calendar days: quoting the raw count as days
+would promise a date it cannot keep.
 - ~~Days with a recorded stockout do not drag average demand down~~ — done,
 steps 1 and 3. The stockout product averages **1.237/day** over its
 eligible days against **0.877/day** if the outage were averaged in, and
