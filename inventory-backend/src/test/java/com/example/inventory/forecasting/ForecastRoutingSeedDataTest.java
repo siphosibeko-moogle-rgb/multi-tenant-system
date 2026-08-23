@@ -2,6 +2,7 @@ package com.example.inventory.forecasting;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -67,6 +68,9 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
 
     @Autowired
     private DemandModels models;
+
+    @Autowired
+    private Forecaster forecaster;
 
     @Autowired
     @org.springframework.beans.factory.annotation.Qualifier("appDataSource")
@@ -143,8 +147,9 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
         StringBuilder report = new StringBuilder(
                 "\n=== MethodSelector over M6 seed data, %d seeds x %d weeks ===\n"
                         .formatted(SEEDS.size(), WINDOW_WEEKS));
-        report.append(String.format("%-13s %5s %7s %9s %9s %8s %8s  %s%n",
-                "shape", "seed", "history", "nonzeroFr", "trend", "season", "avg/day", "method"));
+        report.append(String.format("%-13s %5s %7s %9s %9s %8s %8s %7s  %s%n",
+                "shape", "seed", "history", "nonzeroFr", "trend", "season", "avg/day",
+                "conf", "method"));
 
         Map<String, List<ForecastMethod>> byShape = new LinkedHashMap<>();
 
@@ -159,12 +164,15 @@ class ForecastRoutingSeedDataTest extends AbstractIntegrationTest {
                 String average = selection.isReady()
                         ? round(models.averageDailyDemand(selection.method(), series), 3).toString()
                         : "-";
-                report.append(String.format("%-13s %5d %7d %9s %9s %8s %8s  %s%s%n",
+                var forecast = asTenant(tenant, () -> forecaster.forecast(series, LocalDate.now()));
+                report.append(String.format("%-13s %5d %7d %9s %9s %8s %8s %7s  %s%s%n",
                         shape, seed, selection.historyDays(),
                         round(selection.nonzeroFraction(), 3),
                         round(selection.relativeTrend(), 3),
                         round(selection.seasonalityIndicator(), 3),
-                        average, selection.method().dbValue(),
+                        average,
+                        forecast.confidence() == null ? "-" : forecast.confidence().toString(),
+                        selection.method().dbValue(),
                         selection.isSeasonalitySuspected() ? "  [SEASONAL CAVEAT]" : ""));
             }
         }

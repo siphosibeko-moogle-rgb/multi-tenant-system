@@ -272,6 +272,39 @@ class ReorderRecommendationSeedDataTest extends AbstractIntegrationTest {
     }
 
     @Test
+    @DisplayName("the intermittent product's explanation says the estimate is rough — on real data")
+    void lowConfidenceReachesTheProseOnRealData() throws Exception {
+        var intermittent = asTenant(() -> reorderService.explainedForecast(
+                product("intermittent"), tenant.locationId()));
+        var steady = asTenant(() -> reorderService.explainedForecast(
+                product("steady"), tenant.locationId()));
+
+        System.out.printf("%nintermittent (confidence %s):%n  %s%n%nsteady (confidence %s):%n  %s%n%n",
+                intermittent.forecast().confidence(), intermittent.explanation(),
+                steady.forecast().confidence(), steady.explanation());
+
+        assertThat(intermittent.forecast().confidence())
+                .as("fixture check: a Croston forecast off ~21 selling days in 212 really is "
+                        + "thin, and must measure below the threshold or this test is about "
+                        + "the wrong product")
+                .isLessThan(ForecastExplainer.LOW_CONFIDENCE_THRESHOLD);
+        assertThat(steady.forecast().confidence())
+                .as("and the steady seller must measure above it — otherwise the contrast "
+                        + "below proves nothing")
+                .isGreaterThan(ForecastExplainer.LOW_CONFIDENCE_THRESHOLD);
+
+        assertThat(intermittent.explanation())
+                .as("the prose is the whole point of the explanation field. A shop owner "
+                        + "reading only this must not come away as sure of it as of the steady "
+                        + "seller's, just because both sentences are equally definite.")
+                .contains("Treat this as a rough estimate rather than a firm one")
+                .contains("only sold on");
+        assertThat(steady.explanation())
+                .as("and the well-evidenced product is stated plainly, with no hedge")
+                .doesNotContain("rough estimate");
+    }
+
+    @Test
     @DisplayName("insufficient_data products get an explanation but no recommendation")
     void unreadyProductsAreExplainedNotRecommended() throws Exception {
         for (String shape : List.of("dead", "new")) {

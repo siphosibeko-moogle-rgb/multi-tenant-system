@@ -34,14 +34,27 @@ import com.example.inventory.forecasting.LeadTimeResolver.LeadTime;
  * claims and are worded differently, with the sample size attached to the
  * measured one so the reader can judge how much to trust it.
  *
- * <h2>The seasonal caveat is a sentence, not a flag</h2>
+ * <h2>Caveats are sentences, not flags</h2>
  *
- * <p>A boolean nobody renders protects nobody. When
- * {@link Forecast#seasonalitySuspected()} holds, the explanation says so in
- * words a shop owner can act on — that the product's sales repeat on a cycle,
- * that this estimate averages the busy and quiet stretches together, and what to
- * do about it. The number is still given (see {@link Forecaster}), and the
- * sentence is what stops it being read as more reliable than it is.
+ * <p>A boolean nobody renders protects nobody, and both of this system's
+ * qualifications reach the reader as words:
+ *
+ * <ul>
+ *   <li><strong>Seasonality.</strong> When
+ *       {@link Forecast#seasonalitySuspected()} holds, the explanation says the
+ *       product's sales repeat on a cycle, that this estimate averages the busy
+ *       and quiet stretches together, and what to do about it.</li>
+ *   <li><strong>Low confidence.</strong> {@code confidence} is otherwise a
+ *       number in a JSON field that nothing in the prose reflects. Two products
+ *       could carry "You sell about 2 a week, reorder at 5" in identical,
+ *       equally definite language while one figure rests on 200 steady days and
+ *       the other on a dozen scattered sales. The numbers are not equally
+ *       trustworthy, so the sentences must not be equally confident.</li>
+ * </ul>
+ *
+ * <p>The number is still given either way (see {@link Forecaster}); the sentence
+ * is what stops it being read as more reliable than it is. At most one caveat
+ * appears — see {@link #appendCaveats}.
  */
 @Component
 public class ForecastExplainer {
@@ -52,6 +65,37 @@ public class ForecastExplainer {
      * contract's own example is weekly.
      */
     private static final int DAYS_PER_WEEK = 7;
+
+    /**
+     * Below this confidence, the prose says the estimate is rough.
+     *
+     * <p><strong>Why 0.4.</strong> With full evidence the score reduces to
+     * {@code 1 / (1 + stddev/mean)}, so 0.4 is exactly the score of a
+     * well-evidenced product whose day-to-day demand swings by <em>half again
+     * its own average</em>. That is a genuinely erratic product, and below it
+     * either the evidence is thin or the variation is extreme — both worth
+     * telling somebody about before they spend money on the number.
+     *
+     * <p>Calibrated the same way as {@code MethodSelector.SEASONALITY_THRESHOLD},
+     * against the shapes that occur. Over five seeds of M6's data the
+     * non-cyclical shapes measure: steady 0.661–0.700, trending 0.615–0.644,
+     * stockout 0.478–0.548, intermittent 0.110–0.245. The line falls in the gap
+     * between intermittent and stockout, so an intermittent product — a Croston
+     * forecast built from ~21 selling days in 212 — is flagged, and one that
+     * merely has uneven demand with plenty of history is not.
+     *
+     * <p>Not set high enough to catch the stockout shape at ~0.5. It has 148
+     * eligible days behind it and a solid average; calling that rough would put
+     * a hedge on a perfectly usable number, and a hedge on everything is a hedge
+     * nobody reads — the same argument as the seasonality line.
+     */
+    static final BigDecimal LOW_CONFIDENCE_THRESHOLD = new BigDecimal("0.40");
+
+    /** Below this many selling days, the thinness is worth naming specifically. */
+    private static final int THIN_EVIDENCE_DAYS = 30;
+
+    /** Above this coefficient of variation, the swinginess is worth naming. */
+    private static final BigDecimal ERRATIC_VARIATION = BigDecimal.ONE;
 
     /** The forecast's own explanation: what we think you sell, and for how long. */
     public String explain(Forecast forecast, String productName) {
@@ -72,7 +116,13 @@ public class ForecastExplainer {
                     .append(forecast.daysOfCover().setScale(0, RoundingMode.HALF_UP))
                     .append(" days");
             if (forecast.leadTime() != null) {
-                text.append(", and ").append(leadTimePhrase(forecast.leadTime()));
+                // The subject matters. leadTimePhrase() starts with a verb
+                // ("has been taking..."), which reads correctly after a supplier
+                // name — as in the recommendation rationale — and as a dangling
+                // clause without one: "covers roughly 906 days, and has been
+                // taking about 5 days to deliver" attaches the verb to the
+                // stock rather than to the supplier.
+                text.append(", and your supplier ").append(leadTimePhrase(forecast.leadTime()));
             }
             text.append('.');
         }
@@ -88,7 +138,7 @@ public class ForecastExplainer {
                     + "time to plan around — add one to get a reorder level.");
         }
 
-        appendSeasonalCaveat(text, forecast);
+        appendCaveats(text, forecast);
         return text.toString();
     }
 
@@ -127,7 +177,7 @@ public class ForecastExplainer {
                 .append(" to cover the wait plus roughly the next ")
                 .append(forecast.horizonDays()).append(" days.");
 
-        appendSeasonalCaveat(text, forecast);
+        appendCaveats(text, forecast);
         return text.toString();
     }
 
@@ -193,6 +243,70 @@ public class ForecastExplainer {
                     "quotes " + days + " to deliver (their stated time — you have not had "
                             + "enough deliveries yet to measure the real one)";
         };
+    }
+
+    /**
+     * Appends whichever caveat this forecast has earned, in words.
+     *
+     * <p>At most one. The seasonal caveat wins when both would apply, because it
+     * is the <em>specific</em> reason the number is rough and already tells the
+     * reader to treat it as a rough guide — a cyclical product scores low on
+     * confidence precisely because of the 0.6 seasonal factor, so printing both
+     * would say the same thing twice, once vaguely. Stacking hedges is how prose
+     * stops being read.
+     */
+    private void appendCaveats(StringBuilder text, Forecast forecast) {
+        if (forecast.seasonalitySuspected()) {
+            appendSeasonalCaveat(text, forecast);
+            return;
+        }
+        appendLowConfidenceCaveat(text, forecast);
+    }
+
+    /**
+     * Says plainly that the estimate is rough, and why.
+     *
+     * <p>Without this, {@code confidence} is a number in a JSON field that
+     * nothing in the prose reflects — and the prose is the whole point of the
+     * explanation. A shop owner reading "You sell about 2 a week, reorder at 5"
+     * has no way to tell a figure built from 200 steady days from one built from
+     * a dozen scattered sales, because both sentences are equally definite. The
+     * numbers are not equally trustworthy, so the sentences must not be equally
+     * confident.
+     *
+     * <p>Names the actual reason rather than emitting a bare hedge. "This is a
+     * rough estimate" invites the reader to discount everything; "it has only
+     * sold on 21 days" tells them what would change it, and is something they
+     * can check against their own knowledge of the product.
+     */
+    private void appendLowConfidenceCaveat(StringBuilder text, Forecast forecast) {
+        if (forecast.confidence() == null
+                || forecast.confidence().compareTo(LOW_CONFIDENCE_THRESHOLD) >= 0) {
+            return;
+        }
+
+        boolean thin = forecast.selection().nonZeroEligibleDays() < THIN_EVIDENCE_DAYS;
+        boolean erratic = forecast.avgDailyDemand().signum() > 0
+                && forecast.demandStddev().divide(forecast.avgDailyDemand(), DemandSeries.MC)
+                        .compareTo(ERRATIC_VARIATION) > 0;
+
+        text.append(" Treat this as a rough estimate rather than a firm one");
+        if (thin && erratic) {
+            text.append(" — this product has only sold on ")
+                    .append(forecast.selection().nonZeroEligibleDays())
+                    .append(" days in the period we looked at, and how much it sells swings a "
+                            + "lot from one day to the next");
+        } else if (thin) {
+            text.append(" — this product has only sold on ")
+                    .append(forecast.selection().nonZeroEligibleDays())
+                    .append(" days in the period we looked at, so there is not a lot to go on "
+                            + "yet");
+        } else if (erratic) {
+            text.append(" — how much this product sells swings a lot from one day to the next, "
+                    + "so any single figure will be wide of the mark some weeks");
+        }
+        text.append(". It will sharpen up as more sales come in; until then your own sense of "
+                + "this product is worth as much as the number.");
     }
 
     private void appendSeasonalCaveat(StringBuilder text, Forecast forecast) {

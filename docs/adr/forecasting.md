@@ -48,6 +48,43 @@ avg_daily_demand × lead_time` looks like a safety margin and isn't one — it
 doesn't grow when demand gets erratic, which is the one situation safety
 stock exists for.
 
+### How much to order — settled in M7 step 4
+
+The reorder point says *when*. It does not say *how much*, and this document
+originally didn't either.
+
+```
+recommended_qty = (reorder_point + avg_daily_demand × horizon) − quantity_on_hand
+```
+
+Order back up to the reorder point **plus** the next review period's demand
+(`app.forecasting.horizon-days`, 30). Ordering back to the reorder point
+alone is the obvious-looking version and is wrong in a way that only shows
+up in use: the product sits exactly at its trigger, sells one unit, and
+reappears on the reorder list tomorrow. A list that regenerates itself daily
+is a list people stop reading.
+
+**Deliberately not an economic order quantity.** EOQ is the textbook answer
+here and it is genuinely better — when you have its inputs. It needs a
+fixed cost per order and a holding cost per unit per period, and this
+system records **neither**: there is no order-cost column and no carrying-cost
+column anywhere in `V1`, because nobody has ever been asked for those
+numbers.
+
+Reaching EOQ from here would mean inventing both. That is worse than not
+having it, and specifically worse than the simpler formula above, because
+the output would *look* more sophisticated while resting on two figures
+somebody made up — and neither the shop owner nor the next maintainer would
+be able to tell which part of the recommendation was measured and which was
+assumed. The formula above uses only quantities this system actually
+observes.
+
+**If EOQ is wanted, the work is collecting the two costs, not adding the
+term.** A `√(2DS/H)` appearing in the code with plausible constants beside
+it is not an improvement; it is the same undiscussed-formula-change this
+document exists to prevent, and it would be harder to spot than most because
+it is a real formula correctly implemented on fictional inputs.
+
 ---
 
 ## 2. Which lead time: observed vs promised
@@ -426,6 +463,39 @@ still said — so the caveat qualifies the number rather than replacing it.
 answers "why am I being told to act now, and how much do I order". Both
 carry the caveat, and the recommendation is the more important of the two,
 because it is where somebody actually decides to spend money.
+4. **Low confidence is a sentence too.** `Forecast.confidence` is otherwise a
+number in a JSON field that nothing in the prose reflects, and the prose is
+the whole point of the field. Two products could carry *"You sell about 2 a
+week, reorder at 5"* in identical, equally definite language while one
+figure rests on 200 steady days and the other on a dozen scattered sales.
+Below `ForecastExplainer.LOW_CONFIDENCE_THRESHOLD` (0.40) the explanation
+adds *"Treat this as a rough estimate rather than a firm one — …"*, naming
+the actual reason (few selling days, wildly varying amounts, or both)
+rather than emitting a bare hedge that invites discounting everything.
+
+**Why 0.40.** With full evidence the confidence score reduces to
+`1 / (1 + stddev/mean)`, so 0.40 is exactly the score of a well-evidenced
+product whose day-to-day demand swings by half again its own average.
+Calibrated the same way as §4's seasonality line: over five seeds of M6's
+data the non-cyclical shapes measure steady 0.661–0.700, trending
+0.615–0.644, stockout 0.478–0.548, intermittent 0.110–0.245, and the line
+falls in the gap between intermittent and stockout. The stockout shape at
+~0.5 is deliberately *not* caught — 148 eligible days and a solid average
+is a usable number, and a hedge on everything is a hedge nobody reads.
+
+**At most one caveat appears.** Seasonality wins when both would apply: a
+cyclical product scores low on confidence precisely *because* of the 0.6
+seasonal factor, so printing both would explain the same roughness twice,
+once specifically and once vaguely. Stacking hedges is how prose stops
+being read.
+
+**Note the confidence score itself is a heuristic, not an ADR number** —
+evidence (selling days, saturating at 30) × steadiness (`1/(1+cv)`) × a 0.6
+seasonal factor. The contract requires the field and describes it as "0–1,
+low values mean thin or erratic history"; nothing specifies its
+computation. Null for `insufficient_data`: there is no forecast to be
+confident about, and a low-but-present number would invite reading the
+absent reorder point as merely uncertain rather than absent.
 
 **The `insufficient_data` shortfall is quoted in *selling* days, not calendar
 days**, when that is the binding condition. "Six more days" would promise a

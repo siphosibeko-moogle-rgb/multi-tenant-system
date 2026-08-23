@@ -141,6 +141,159 @@ class ForecastExplainerTest {
     }
 
     @Nested
+    @DisplayName("the low-confidence caveat")
+    class LowConfidenceCaveat {
+
+        /**
+         * A ready forecast with a chosen confidence and shape. Everything else
+         * matches {@link #clean()}, so any difference in the prose is
+         * attributable to the confidence alone.
+         */
+        private Forecast withConfidence(String confidence, int sellingDays,
+                                        String avgDaily, String stddev) {
+            Selection selection = new Selection(ForecastMethod.CROSTON, 212, 212, sellingDays,
+                    new BigDecimal("0.099"), new BigDecimal("0.213"), new BigDecimal("0.054"),
+                    0, 0);
+            return new Forecast(PRODUCT, LOCATION, selection,
+                    new BigDecimal(avgDaily), new BigDecimal(stddev), 30,
+                    new BigDecimal("8.130"), new BigDecimal("4.000"), new BigDecimal("14.76"),
+                    LocalDate.of(2026, 9, 7), new BigDecimal("3.900"), new BigDecimal("1.900"),
+                    new LeadTime(SUPPLIER, "Golden Wheat", new BigDecimal("5.29"),
+                            Source.OBSERVED, 7),
+                    new BigDecimal("0.950"), new BigDecimal(confidence),
+                    LocalDate.of(2026, 1, 1), LocalDate.of(2026, 7, 31), false);
+        }
+
+        @Test
+        @DisplayName("a low-confidence estimate says so, in words, and names why")
+        void aRoughEstimateSaysItIsRough() {
+            // 0.180 — the intermittent shape's measured confidence on seed 1.
+            String text = explainer.explain(
+                    withConfidence("0.180", 21, "0.2710", "0.8200"), "Spice Mix");
+
+            assertThat(text)
+                    .as("confidence is otherwise a number in a JSON field that nothing in the "
+                            + "prose reflects. Actual: %s", text)
+                    .contains("Treat this as a rough estimate rather than a firm one")
+                    .contains("only sold on 21 days")
+                    .contains("swings a lot from one day to the next");
+            assertThat(text)
+                    .as("and it says what would change it, rather than leaving a bare hedge "
+                            + "that invites discounting everything")
+                    .contains("It will sharpen up as more sales come in");
+        }
+
+        @Test
+        @DisplayName("a confident estimate carries no hedge at all")
+        void aSolidEstimateIsStatedPlainly() {
+            String text = explainer.explain(clean(), "Steady Seller Bread");
+
+            assertThat(text)
+                    .as("a hedge on everything is a hedge nobody reads — the same argument as "
+                            + "the seasonality line")
+                    .doesNotContain("rough estimate")
+                    .doesNotContain("sharpen up");
+        }
+
+        @Test
+        @DisplayName("the two read differently — the whole point of surfacing confidence")
+        void definitenessTracksTrustworthiness() {
+            String confident = explainer.explain(clean(), "Bread");
+            String rough = explainer.explain(
+                    withConfidence("0.180", 21, "0.2710", "0.8200"), "Spice Mix");
+
+            assertThat(rough).isNotEqualTo(confident);
+            assertThat(rough.contains("rough estimate"))
+                    .as("a shop owner reading only the prose must not come away as sure of the "
+                            + "0.18-confidence number as of the 0.68 one. Both used to end in "
+                            + "an equally definite 'Reorder when you get down to about N.'")
+                    .isTrue();
+            assertThat(confident.contains("rough estimate")).isFalse();
+        }
+
+        @Test
+        @DisplayName("the threshold is checked from both sides")
+        void theThresholdHasTwoSides() {
+            // Just under and just over 0.40, identical in every other respect.
+            String under = explainer.explain(
+                    withConfidence("0.399", 21, "0.2710", "0.8200"), "Spice Mix");
+            String over = explainer.explain(
+                    withConfidence("0.401", 21, "0.2710", "0.8200"), "Spice Mix");
+
+            assertThat(under).contains("rough estimate");
+            assertThat(over)
+                    .as("the positive twin: without it, a caveat that fired unconditionally "
+                            + "would satisfy every assertion above")
+                    .doesNotContain("rough estimate");
+        }
+
+        @Test
+        @DisplayName("thin evidence and erratic demand are named separately, not lumped together")
+        void theReasonGivenIsTheRealOne() {
+            // Plenty of selling days, but violently uneven demand.
+            String erratic = explainer.explain(
+                    withConfidence("0.300", 180, "2.0000", "4.0000"), "Lumpy Item");
+            assertThat(erratic)
+                    .as("nothing thin about 180 selling days — saying so would be wrong")
+                    .doesNotContain("only sold on")
+                    .contains("swings a lot from one day to the next");
+
+            // Few selling days, but what it does sell is consistent.
+            String thin = explainer.explain(
+                    withConfidence("0.300", 12, "2.0000", "0.5000"), "New-ish Item");
+            assertThat(thin)
+                    .as("and its demand is steady, so calling it swingy would be wrong too")
+                    .contains("only sold on 12 days")
+                    .doesNotContain("swings a lot");
+        }
+
+        @Test
+        @DisplayName("a seasonal product gets the seasonal caveat only, not both")
+        void caveatsDoNotStack() {
+            // The seasonal fixture's real confidence is ~0.28 — under the
+            // threshold — precisely because the 0.6 seasonal factor drags it
+            // there. Printing both would explain the same roughness twice, once
+            // specifically and once vaguely.
+            Forecast seasonalAndRough = new Forecast(PRODUCT, LOCATION,
+                    selection(ForecastMethod.MOVING_AVERAGE, new BigDecimal("0.908")),
+                    new BigDecimal("3.1980"), new BigDecimal("3.6120"), 30,
+                    new BigDecimal("95.940"), new BigDecimal("50.000"), new BigDecimal("15.63"),
+                    LocalDate.of(2026, 9, 7), new BigDecimal("94.383"), new BigDecimal("27.225"),
+                    new LeadTime(SUPPLIER, "Riverbend", new BigDecimal("21"),
+                            Source.PROMISED_BY_SUPPLIER, 2),
+                    new BigDecimal("0.950"), new BigDecimal("0.282"),
+                    LocalDate.of(2026, 1, 1), LocalDate.of(2026, 7, 31), true);
+
+            String text = explainer.explain(seasonalAndRough, "Party Platter");
+
+            assertThat(text)
+                    .as("the specific reason wins")
+                    .contains("cannot fully account for that pattern");
+            assertThat(text)
+                    .as("stacking hedges is how prose stops being read, and the seasonal "
+                            + "caveat already says 'treat it as a rough guide'")
+                    .doesNotContain("Treat this as a rough estimate");
+        }
+
+        @Test
+        @DisplayName("an insufficient_data product gets no confidence hedge — it has no number")
+        void anUnreadyProductIsNotHedgedTwice() {
+            Selection selection = new Selection(ForecastMethod.INSUFFICIENT_DATA, 11, 11, 5,
+                    new BigDecimal("0.4"), BigDecimal.ZERO, BigDecimal.ZERO, 31, 5);
+            Forecast unready = new Forecast(PRODUCT, LOCATION, selection, BigDecimal.ZERO,
+                    BigDecimal.ZERO, 30, BigDecimal.ZERO, new BigDecimal("12"), null, null,
+                    null, null, null, new BigDecimal("0.950"), null,
+                    LocalDate.of(2026, 7, 20), LocalDate.of(2026, 7, 31), false);
+
+            assertThat(explainer.explain(unready, "Sourdough"))
+                    .as("'still learning' already says there is no number to be confident "
+                            + "about; adding 'treat this as rough' would hedge a figure that "
+                            + "was never given")
+                    .doesNotContain("rough estimate");
+        }
+    }
+
+    @Nested
     @DisplayName("a ready forecast")
     class ReadyForecast {
 
@@ -165,7 +318,7 @@ class ForecastExplainerTest {
             assertThat(text)
                     .as("ADR §6: this sentence is the one place a shop owner sees the figure, "
                             + "so it cannot silently mix measured with promised")
-                    .contains("has been taking about 5.3 days")
+                    .contains("and your supplier has been taking about 5.3 days")
                     .contains("measured over 7 deliveries");
         }
 
