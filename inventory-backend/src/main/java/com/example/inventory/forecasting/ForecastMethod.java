@@ -32,6 +32,26 @@ public enum ForecastMethod {
     ML_MODEL("ml_model"),
 
     /**
+     * The "same as last period" baseline — {@code docs/adr/forecasting.md} §7,
+     * added to the database enum by {@code V10}'s predecessor {@code V9}.
+     *
+     * <p><strong>Deliberately absent from the contract's enum</strong>, unlike
+     * every other value here. {@code MethodSelector} never returns it and no
+     * product is ever forecast with it; {@code ForecastAccuracyJob} writes
+     * synthetic rows carrying it, always {@code is_current = false}, purely to
+     * be scored against. Since {@code GET /forecasts} returns current forecasts,
+     * a client can never receive {@code method: "naive"} — and listing it in the
+     * contract would document a response the API does not produce.
+     *
+     * <p>So this enum mirrors the <em>database</em>'s {@code forecast_method},
+     * while the contract mirrors what the API <em>returns</em>. Those are
+     * legitimately different sets and this is the one value that differs.
+     * {@code MethodSelectorTest} asserts both halves so the difference stays
+     * deliberate rather than becoming drift.
+     */
+    NAIVE("naive"),
+
+    /**
      * Below the readiness threshold (ADR §5). Not a method so much as a refusal
      * to state one — and it still carries a real explanation (ADR §6).
      */

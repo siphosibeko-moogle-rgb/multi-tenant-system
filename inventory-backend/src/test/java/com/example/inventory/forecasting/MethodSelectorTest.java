@@ -558,7 +558,23 @@ class MethodSelectorTest {
                             + "Java enum and not in the contract serializes something no "
                             + "generated client can parse")
                     .containsAll(java.util.Arrays.stream(ForecastMethod.values())
+                            .filter(m -> m != ForecastMethod.NAIVE)
                             .map(ForecastMethod::dbValue).toList());
+
+            assertThat(declared)
+                    .as("'naive' is the one deliberate exception, and it is asserted rather "
+                            + "than merely omitted. ForecastAccuracyJob writes naive rows only "
+                            + "as scoring baselines, always is_current = false, so GET "
+                            + "/forecasts can never return one — listing it would document a "
+                            + "response the API does not produce. This enum mirrors the "
+                            + "DATABASE's forecast_method; the contract mirrors what the API "
+                            + "RETURNS. Adding it to the contract, or letting a real forecast "
+                            + "use it, should fail here.")
+                    .doesNotContain(ForecastMethod.NAIVE.dbValue());
+
+            assertThat(selector.select(series(200, 1, new BigDecimal("3"))).method())
+                    .as("and the selector must never choose it")
+                    .isNotEqualTo(ForecastMethod.NAIVE);
         }
     }
 }

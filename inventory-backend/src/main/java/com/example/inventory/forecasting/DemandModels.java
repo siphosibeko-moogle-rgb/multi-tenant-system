@@ -47,7 +47,7 @@ public class DemandModels {
             case MOVING_AVERAGE -> movingAverage(series);
             case WEIGHTED_MOVING_AVERAGE -> weightedMovingAverage(series);
             case CROSTON -> croston(series);
-            case EXPONENTIAL_SMOOTHING, ML_MODEL -> throw new IllegalArgumentException(
+            case EXPONENTIAL_SMOOTHING, ML_MODEL, NAIVE -> throw new IllegalArgumentException(
                     method.dbValue() + " is declared but not implemented — MethodSelector "
                             + "never returns it. See MethodSelector's Javadoc.");
             case INSUFFICIENT_DATA -> throw new IllegalArgumentException(

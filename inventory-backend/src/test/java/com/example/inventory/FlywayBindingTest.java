@@ -148,10 +148,12 @@ class FlywayBindingTest {
         // including a migration that silently failed to apply, and would agree
         // with the bug instead of catching it. Same reasoning as T11's tables.
         // V5 (sale_returns), V6 (partially_refunded_status), V7
-        // (sale_numbering), V8 (po_numbering) and V9
-        // (demand_rollup_and_naive_baseline) added with the migrations that
+        // (sale_numbering), V8 (po_numbering), V9
+        // (demand_rollup_and_naive_baseline) and V10
+        // (forecast_accuracy_uniqueness) added with the migrations that
         // introduced them.
-        assertThat(versions).containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9");
+        assertThat(versions)
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10");
     }
 
     @Test
