@@ -186,10 +186,37 @@ public class TenantSeeder {
      * day never produces a zero-demand day, and "demand_daily includes
      * zero-demand days" is M6's own most-common-bug warning. The 10% of
      * silent days are exactly that gap.
+     *
+     * <h2>Why this restocks itself, reactively, uncapped</h2>
+     *
+     * <p>A real seed run found this the hard way, twice. First here: a
+     * single 200-unit opening stock covers roughly 10 weeks of this rate
+     * (worst case ~90% x 4 x 70 = 252, so even a short test window was
+     * already close), nowhere near a 30-week window's ~90% x ~3 x 210 ≈ 567
+     * units of demand. Fixed once with a hand-computed periodic top-up sized
+     * against THIS shape's own worst case — and the same real run then found
+     * the identical class of bug in {@link #seedTrendingProduct}, whose
+     * worst case is a different number because its rate grows. Hand-tuning
+     * a margin per shape is exactly what turned out not to be reliable, so
+     * {@link #restockIfLow} replaces it here and everywhere else in this
+     * class that sells continuously: it reacts to the actual balance
+     * instead of a calculation about what the balance should be, which
+     * makes it correct for any demand curve — flat, growing, whatever comes
+     * next — without re-deriving a margin for each one.
+     *
+     * <p>Deliberately NOT switched to {@link #sellUpTo} — capping demand to
+     * whatever happens to be on the shelf is right for the stockout shape,
+     * where running dry IS the point, but wrong here: silently suppressing
+     * sales near a shortfall would make the "roughly consistent, low
+     * variance" shape quietly taper off late in the window, which is a
+     * second, unintended demand shape hiding inside the one this method
+     * promises. A steady seller that is genuinely popular gets restocked
+     * often in real life; this generator does the same.
      */
     void seedSteadySeller(UUID productId, UUID locationId, LocalDate start, LocalDate endExclusive, Random rng) {
         stockUp(productId, locationId, start.minusDays(1), new BigDecimal(200), new BigDecimal("8.00"));
         for (LocalDate date = start; date.isBefore(endExclusive); date = date.plusDays(1)) {
+            restockIfLow(productId, locationId, date, new BigDecimal("8.00"));
             if (rng.nextDouble() < 0.90) {
                 sell(productId, locationId, date, 2 + rng.nextInt(3));
             }
@@ -209,6 +236,11 @@ public class TenantSeeder {
                                 Random rng) {
         stockUp(productId, locationId, start.minusDays(1), new BigDecimal(60), new BigDecimal("12.00"));
         for (LocalDate date = start; date.isBefore(endExclusive); date = date.plusDays(1)) {
+            // Comfortably above what a 1-in-10 rate needs (§ arithmetic in
+            // seedSteadySeller's Javadoc) — kept anyway, for the same reason
+            // every other continuously-selling shape has it: a margin that
+            // is merely "probably enough" is exactly what failed twice.
+            restockIfLow(productId, locationId, date, new BigDecimal("12.00"));
             if (rng.nextDouble() < 0.10) {
                 sell(productId, locationId, date, 1 + rng.nextInt(3));
             }
@@ -220,11 +252,15 @@ public class TenantSeeder {
      * with noise. Weekly target quantity rises linearly from ~5/week at the
      * start to ~5 + 0.6*weeks by the end (roughly 22/week at 30 weeks), so a
      * method that assumes a stationary mean (plain moving average) will
-     * visibly lag it.
+     * visibly lag it. Restocks via {@link #restockIfLow} for the same
+     * reason {@link #seedSteadySeller} does — see that method's Javadoc:
+     * this is the shape whose GROWING rate is what actually found the bug a
+     * flat-rate margin, calculated by hand, did not generalize to.
      */
     void seedTrendingProduct(UUID productId, UUID locationId, LocalDate start, LocalDate endExclusive, Random rng) {
         stockUp(productId, locationId, start.minusDays(1), new BigDecimal(250), new BigDecimal("6.00"));
         for (LocalDate date = start; date.isBefore(endExclusive); date = date.plusDays(1)) {
+            restockIfLow(productId, locationId, date, new BigDecimal("6.00"));
             double weekIndex = ChronoUnit.DAYS.between(start, date) / 7.0;
             double weeklyTarget = 5.0 + weekIndex * 0.6;
             double dailyProbability = Math.min(0.85, weeklyTarget / 7.0 / 2.0);
@@ -320,20 +356,20 @@ public class TenantSeeder {
         // the only sensible place for it, since any date this method chose
         // independently for a SEPARATE PO would risk landing inside its own
         // scripted empty-shelf window above.
+        //
+        // Once resumed, this behaves like any other continuously-selling
+        // shape — restockIfLow, not a one-off top-up. A single extra top-up
+        // partway through was tried first and was not enough to survive a
+        // full-length real run's post-restock tail (same lesson as
+        // seedSteadySeller's Javadoc: a margin calculated once for "this
+        // much window" does not generalize to a different window length).
         LocalDate restockDate = stockoutStart.plusDays(stockoutDays);
         orderAndReceive(supplierId, locationId, productId, new BigDecimal(35), new BigDecimal("7.00"),
                 restockDate.minusDays(4), 4);
         for (LocalDate d = restockDate.plusDays(1); d.isBefore(endExclusive); d = d.plusDays(1)) {
+            restockIfLow(productId, locationId, d, new BigDecimal("7.00"));
             if (rng.nextDouble() < 0.5) {
-                sellUpTo(productId, locationId, d, 2 + rng.nextInt(2));
-            }
-            // A second, smaller top-up partway through the resumed baseline
-            // — otherwise a long post-restock tail (the real 30-week seed
-            // run, not this class's shorter test window) would run the
-            // shelf back down to zero on its own, quietly turning "resumed
-            // normal selling" back into a second, unintended stockout.
-            if (d.equals(restockDate.plusDays(ChronoUnit.DAYS.between(restockDate, endExclusive) / 2))) {
-                stockUp(productId, locationId, d, new BigDecimal(35), new BigDecimal("7.00"));
+                sell(productId, locationId, d, 2 + rng.nextInt(2));
             }
         }
     }
@@ -461,6 +497,26 @@ public class TenantSeeder {
                          BigDecimal unitCost) {
         ledger.post(new MovementRequest(productId, locationId, "adjustment", quantity, unitCost,
                 null, null, "seed opening stock", date.atTime(8, 0).atOffset(ZoneOffset.UTC)));
+    }
+
+    /**
+     * Tops up whenever the balance drops below a low-water mark, rather than
+     * on a schedule computed in advance. Every shape that sells continuously
+     * across the whole window (steady, intermittent, trending) calls this
+     * once per day, before that day's sale attempt — see
+     * {@link #seedSteadySeller}'s Javadoc for why a calculated margin turned
+     * out not to generalize across shapes with different demand curves, and
+     * why this replaced it everywhere rather than just where it first broke.
+     *
+     * <p>The threshold (30) and top-up (150) are sized against the worst
+     * plausible SINGLE day's demand across every shape that calls this
+     * (never more than ~5 units) — comfortably clears any one day, and the
+     * next check the following day catches anything this one didn't.
+     */
+    private void restockIfLow(UUID productId, UUID locationId, LocalDate date, BigDecimal unitCost) {
+        if (currentStock(productId, locationId).compareTo(new BigDecimal(30)) < 0) {
+            stockUp(productId, locationId, date, new BigDecimal(150), unitCost);
+        }
     }
 
     private BigDecimal currentStock(UUID productId, UUID locationId) {

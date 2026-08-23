@@ -28,17 +28,30 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Runs {@link TenantSeeder#seedTenant} for two tenants exactly once (a
  * {@code @BeforeEach} guarded by a static flag — see {@link #seed()}) — it is
  * the slow part of this class by a wide margin, and every criterion below can
- * be checked against the same two runs. A shorter window than the real seed
- * run's 30 weeks
- * (below the intermittent shape's ~14-week readiness point, deliberately —
- * this class proves the MECHANISM, not the full-scale realism the real
- * {@code --spring.profiles.active=seed} run produces) keeps this fast enough
- * to run with everything else.
+ * be checked against the same two runs.
+ *
+ * <p><strong>At {@link SeedDataRunner#WINDOW_WEEKS}, the real production
+ * window — not a shorter one.</strong> It was, once: a shorter window ran
+ * faster and passed, and a real seed run then threw
+ * {@code InsufficientStockException} on the steady seller, because a fixed
+ * 200-unit opening stock covered that shorter window's demand and fell well
+ * short of 30 weeks' worth. This class is now structurally unable to test a
+ * different scale than production runs at — the slower run time (still well
+ * under a minute) is the cost of that being true.
  */
 @DisplayName("M6 seed data")
 class SeedDataVerificationTest extends AbstractIntegrationTest {
 
-    private static final int WINDOW_WEEKS = 10;
+    /**
+     * The REAL production window (same constant {@code SeedDataRunner} runs
+     * with), not a shorter one for speed. A shorter window is exactly what
+     * let the steady seller's insufficient-headroom bug reach a real seed
+     * run undetected: 200 opening units happened to cover a shorter test
+     * window's demand while falling well short of 30 weeks' worth. Sharing
+     * the constant means this class is now structurally unable to test a
+     * different scale than production runs at.
+     */
+    private static final int WINDOW_WEEKS = SeedDataRunner.WINDOW_WEEKS;
 
     @Autowired
     private TenantSeeder seeder;
