@@ -13,6 +13,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -20,6 +23,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.inventory.mobile.auth.SessionManager
 import com.example.inventory.mobile.ui.LoginScreen
 import com.example.inventory.mobile.ui.ProductListScreen
+import com.example.inventory.mobile.ui.SignUpScreen
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -47,12 +51,32 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     val state by session.state.collectAsStateWithLifecycle()
+
+                    // Which signed-out screen to show. Deliberately not part of
+                    // SessionManager's state: whether the user is looking at
+                    // sign-in or sign-up is a UI concern, and putting it in the
+                    // session would mean the network layer's expiry handler
+                    // could land someone on a sign-up form.
+                    var showSignUp by rememberSaveable { mutableStateOf(false) }
+
                     when (state) {
-                        is SessionManager.State.LoggedOut -> LoginScreen()
-                        is SessionManager.State.LoggedIn -> ProductListScreen(
-                            tenantName = (state as SessionManager.State.LoggedIn).tenantName,
-                            onSignOut = { session.signOut() },
-                        )
+                        is SessionManager.State.LoggedOut ->
+                            if (showSignUp) {
+                                SignUpScreen(onBackToSignIn = { showSignUp = false })
+                            } else {
+                                LoginScreen(onCreateAccount = { showSignUp = true })
+                            }
+
+                        is SessionManager.State.LoggedIn -> {
+                            // Reset, so signing out later lands on sign-in
+                            // rather than back on the sign-up form the user
+                            // just completed.
+                            showSignUp = false
+                            ProductListScreen(
+                                tenantName = (state as SessionManager.State.LoggedIn).tenantName,
+                                onSignOut = { session.signOut() },
+                            )
+                        }
                     }
                 }
             }

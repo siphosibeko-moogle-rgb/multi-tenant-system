@@ -73,7 +73,10 @@ class LoginViewModel @Inject constructor(
  * can act on.
  */
 @Composable
-fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
+fun LoginScreen(
+    onCreateAccount: () -> Unit = {},
+    viewModel: LoginViewModel = hiltViewModel(),
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     var email by remember { mutableStateOf("") }
@@ -154,6 +157,16 @@ fun LoginScreen(viewModel: LoginViewModel = hiltViewModel()) {
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        // Registration has existed since M1 and had no way in from the app
+        // until now — the only route to a new business was curl.
+        androidx.compose.material3.TextButton(
+            onClick = onCreateAccount,
+            enabled = !state.submitting,
+        ) {
+            Text("New here? Create a business account")
         }
     }
 }

@@ -2,6 +2,7 @@ package com.example.inventory.mobile.auth
 
 import com.example.inventory.api.apis.AuthenticationApi
 import com.example.inventory.api.models.LoginRequest
+import com.example.inventory.api.models.TenantRegistrationRequest
 import com.example.inventory.mobile.net.ApiError
 import com.example.inventory.mobile.net.SessionExpiryHandler
 import com.example.inventory.mobile.net.toApiError
@@ -67,6 +68,79 @@ class SessionManager @Inject constructor(
                 // server bug, but the client still has to say something useful
                 // rather than throw a null-pointer at the user.
                 return ApiError("Signed in, but the server did not return a session token.")
+            }
+
+            tokens.save(access, refresh)
+            _state.value = State.LoggedIn(
+                displayName = body.user.fullName,
+                tenantName = body.user.tenant.name,
+            )
+            null
+        } catch (e: Exception) {
+            ApiError.fromNetworkFailure(e)
+        }
+    }
+
+    /**
+     * Signs up a new business and its first owner, and signs them straight in.
+     *
+     * @return null on success, or the error to show.
+     *
+     * **No second login call.** `POST /auth/register-tenant` answers 201 with a
+     * full `AuthTokens` — the same body `/auth/login` returns — so the tokens to
+     * establish the session are already in hand. Bouncing the owner back to a
+     * login form to retype the email and password they just chose would be a
+     * round trip the contract does not ask for and the user would rightly find
+     * absurd.
+     *
+     * **No email-verification step.** Checked against the contract rather than
+     * assumed: `register-tenant` has exactly three failure responses — 409, 422
+     * and 429 — and none of them is a pending-verification state. Inventing one
+     * would be inventing a requirement.
+     */
+    suspend fun register(
+        businessName: String,
+        slug: String,
+        ownerName: String,
+        ownerEmail: String,
+        ownerPassword: String,
+    ): ApiError? {
+        return try {
+            val response = authApi.authRegisterTenantPost(
+                TenantRegistrationRequest(
+                    businessName = businessName.trim(),
+                    slug = slug.trim().lowercase(),
+                    ownerEmail = ownerEmail.trim(),
+                    ownerPassword = ownerPassword,
+                    ownerName = ownerName.trim(),
+                )
+            )
+
+            if (!response.isSuccessful) {
+                // A 409 here means the slug is taken — the contract records that
+                // disclosure as deliberate. The generic 409 wording ("that
+                // conflicts with something already saved") is useless to someone
+                // filling in a sign-up form, and the server's own detail names
+                // the slug, which is a field they did not necessarily type. This
+                // is the one place that knows a 409 means "pick another name".
+                //
+                // A primary-key collision returns the same 409 with the same
+                // body by design, so the client cannot tell the two apart — and
+                // "try another name" is the right advice for both.
+                if (response.code() == 409) {
+                    return ApiError(
+                        "That business name is taken, try another.",
+                        "Business web addresses have to be unique across all businesses here.",
+                    )
+                }
+                return response.toApiError()
+            }
+
+            val body = response.body()
+            val access = body?.accessToken
+            val refresh = body?.refreshToken
+            if (access == null || refresh == null) {
+                return ApiError("Your business was created, but the server did not return a session token.")
             }
 
             tokens.save(access, refresh)
