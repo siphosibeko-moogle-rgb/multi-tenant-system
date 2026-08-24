@@ -118,13 +118,32 @@ class RecordSaleViewModelTest {
      * response the API cannot produce, and any bug in reading those fields would
      * have been invisible here.
      */
+    /**
+     * A `SaleDetail` body carrying every field the contract marks required.
+     *
+     * `returnedQuantity` and `outstandingQuantity` are on that list and were
+     * missing here — M4 added them to `SaleDetail.lines[]` when it built partial
+     * returns, and this fixture was written before that. The consequence was
+     * not a failing line assertion: Moshi rejected the whole line, so the entire
+     * body failed to parse, `recordedSaleNumber` came back null and two tests
+     * failed with `expected:<S-1> but was:<null>` — a message that points at the
+     * sale number and says nothing about the two fields actually responsible.
+     *
+     * Fourth time in this codebase (CLAUDE.md §15, §16): **a fixture asserts
+     * what you tell it to.** The app itself was never broken — the real server
+     * sends both fields and `ResponseRequiredFieldsHttpTest` enforces that over
+     * HTTP — so this was a test failing against a response the API cannot
+     * produce, which is worse than useless: it costs trust in the suite while
+     * proving nothing about the client.
+     */
     private fun saleResponse(number: String) = MockResponse().setResponseCode(201).setBody(
         """{"id":"${UUID.randomUUID()}","saleNumber":"$number","status":"completed",
             "itemCount":1,"subtotalAmount":10.00,"discountAmount":0,"taxAmount":1.50,
             "totalAmount":11.50,"soldAt":"2026-08-18T10:00:00+02:00",
             "locationId":"${UUID.randomUUID()}","createdBy":"${UUID.randomUUID()}",
             "lines":[{"productId":"${product.id}","sku":"SKU-1","name":"Bread",
-                      "quantity":1,"unitPrice":10.00,"discountAmount":0,"lineTotal":10.00}]}"""
+                      "quantity":1,"unitPrice":10.00,"discountAmount":0,"lineTotal":10.00,
+                      "returnedQuantity":0,"outstandingQuantity":1}]}"""
     )
 
     // ------------------------------------------------------------------
