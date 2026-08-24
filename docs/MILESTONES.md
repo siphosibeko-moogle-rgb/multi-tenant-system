@@ -617,6 +617,37 @@ and averages the weekend peaks flat, and only the caveat says otherwise.
 **What remains to close this** is a method with a seasonal term, so the
 number itself becomes right rather than merely flagged as wrong.
 
+**The five endpoints — done, step 6.** `GET /forecasts`,
+`GET /products/{id}/forecast`, `POST /forecasts/recompute`,
+`GET /reorder-recommendations`, `POST /reorder-recommendations/{id}/dismiss`,
+all asserted over real HTTP with every contract-`required` field checked for
+presence *and* non-nullity. Role gates asserted allow **and** deny per role:
+reads are open to all four including `viewer`; recompute and dismiss are
+`owner`/`manager`, since both write and both feed purchasing.
+
+**Confirmed: M7 added no tenant-scoped tables.** `demand_daily`,
+`forecasts`, `forecast_accuracy` and `reorder_recommendations` are all V1's
+and were already in T11's three sweeps, so T11 needed no change all
+milestone.
+
+**Three contract/schema gaps found while wiring the endpoints**, flagged
+rather than papered over (CLAUDE.md §1):
+
+1. **`ReorderRecommendation.urgency` is `required` and had no column.**
+`V11` adds one rather than deriving it on read — urgency is measured
+against the supplier's lead time, so deriving it later would mean
+re-resolving that on every read and could disagree with the rationale
+text stored beside it.
+2. **`ForecastDetail.history` is `required` while `includeHistory` defaults
+to false.** Both cannot be honoured by omitting the field, so "excluded"
+means an empty array rather than an absent key.
+3. **`POST /forecasts/recompute` is documented as asynchronous and runs
+inline.** Deferring it means binding the tenant on a worker thread, and
+`TenantContext` is deliberately not inheritable — the same decision as
+the scheduled rollup below, which §12 says to make deliberately. 202 is
+still honest (the request was accepted), and there is no job-status
+endpoint to poll, which fits.
+
 **Named gap — scheduled cross-tenant rollup is not built.** Recompute is
 request-bound via `POST /forecasts/recompute`; a scheduled cross-tenant
 rollup needs a documented T1 exception or a per-tenant credential — not yet
