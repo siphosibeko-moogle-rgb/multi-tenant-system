@@ -43,6 +43,23 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * scoring arithmetic and the baseline construction — the rollup that produces
  * those rows has its own tests, and routing this fixture through it would make
  * the expected numbers depend on the rollup's correctness as well.
+ *
+ * <h2>The {@code method} on these fixtures is a LABEL, not a measurement</h2>
+ *
+ * <p><strong>Do not read a per-method MAPE built from this class as a statement
+ * about any method.</strong> The fixtures below carry method names so that the
+ * grouping can be exercised, but their demand is flat and their predicted values
+ * are round numbers picked to make percentages checkable — no Croston code
+ * produced the figure on a "croston" fixture, and nothing here is intermittent.
+ *
+ * <p>This is worth stating because the confusion already happened once: a table
+ * from this class showed croston at 30% against naive at 28%, which reads
+ * exactly like a real result and is not one. It is two arbitrary fixtures
+ * averaged together.
+ *
+ * <p>{@code BaselineComparisonTest} is where methods are actually judged —
+ * genuine demand shapes, the real selector, the real estimators, history
+ * truncated per window.
  */
 @DisplayName("Forecast accuracy against the naive baseline")
 class ForecastAccuracyTest extends AbstractIntegrationTest {
@@ -406,7 +423,10 @@ class ForecastAccuracyTest extends AbstractIntegrationTest {
                     .as("this fixture's moving_average forecast was exact (50 predicted, 50 "
                             + "actual) while naive quoted the prior period's 20 — so the "
                             + "comparison must come out in the real method's favour, and a "
-                            + "grouping that mixed them could not show it")
+                            + "grouping that mixed them could not show it. NOTE this is a "
+                            + "statement about the GROUPING, not about moving_average: the "
+                            + "numbers are hand-picked. See the class Javadoc, and "
+                            + "BaselineComparisonTest for the comparison that judges methods.")
                     .isLessThan(naive.meanAbsPctError());
         }
     }

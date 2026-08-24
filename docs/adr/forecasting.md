@@ -518,6 +518,41 @@ possible forecast, which is the point: if the real method can't beat it,
 "the model isn't earning its complexity" is a mechanical fact, not a
 judgment call.
 
+### The standing question: can the baseline see the answer?
+
+**Ask this of every baseline and every scoring window, every time one is added
+or changed.** It is the failure mode this comparison is most exposed to, it
+produces no error, and the symptom is a result that looks like a finding.
+
+The naive prediction for `[period_start, period_end)` is the actual demand
+from **the immediately preceding period**, `[period_start − length,
+period_start)`. Point it at the evaluation period itself instead — a
+one-argument slip, and a natural-looking one, since every other figure in
+that code path is about the evaluation period — and naive becomes a perfect
+forecast of the answer it is being scored against. Its MAPE collapses toward
+zero, every real method appears to lose to it by a wide margin, and the
+conclusion drawn from the table is "the models are not earning their
+complexity" — which is exactly the sentence this section exists to make
+mechanically checkable, arrived at for exactly the wrong reason.
+
+M7 step 5 found this by mutation rather than by reasoning, which is the point:
+nothing about the wrong version looks wrong. It is caught now by
+`ForecastAccuracyTest.bothSidesAreScored`, which asserts the naive prediction
+equals the *prior* window's total and not the evaluation window's.
+
+The same question applies to anything added later — a seasonal-naive baseline
+("same as this period last year"), a moving-average baseline, a rolling
+re-score, a widened window. In each case: **does the data this baseline reads
+overlap the period it is scored against?** If it does, the baseline is not
+forecasting, it is remembering, and every comparison against it is void.
+
+The corresponding rule for real methods is the same one from the other side:
+a forecast must be computed from history strictly before its evaluation
+window. `BaselineComparisonTest` truncates the series per window for this
+reason rather than forecasting once from everything.
+
+---
+
 **Representation was left to M7's migration author. RESOLVED in M7 step 1 —
 shape (a).** Two shapes were considered:
 

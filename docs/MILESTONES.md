@@ -509,6 +509,27 @@ itself is verified by `ForecastAccuracyTest` against hand-checkable
 numbers — a forecast of 45 against an actual of 50 scores 10.00%, and the
 naive baseline quoting the prior period's 30 scores 40.00%.
 
+**Each method does beat naive on the shape it is chosen for** —
+`BaselineComparisonTest`, over 6 windows of 30 days on constructed but
+genuinely-shaped demand, with the real selector and estimators and history
+truncated per window:
+
+| shape | method | MAPE | naive |
+|---|---|---|---|
+| intermittent (~1 day in 10) | `croston` | **44.43%** | 70.16% |
+| steady (~90% of days) | `moving_average` | **8.33%** | 15.13% |
+
+Croston's margin is the larger one and that is the expected direction:
+naive quotes whatever the previous 30 days happened to sell, which swings
+wildly for an intermittent product, while Croston estimates a rate from
+demand size and interval and stays steady.
+
+**A per-method MAPE from `ForecastAccuracyTest` is NOT a result.** Those
+fixtures carry method names as labels with flat demand and hand-picked
+predicted values; a table from them once showed croston at 30% against
+naive at 28%, which reads exactly like a finding and is two arbitrary
+numbers averaged. Methods are judged in `BaselineComparisonTest` only.
+
 Two properties worth knowing about the implementation:
 - **`abs_pct_error` is null when the actual is zero**, not a large finite
 number. MAPE is undefined against zero, and a stand-in would dominate
