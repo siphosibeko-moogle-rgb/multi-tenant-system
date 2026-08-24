@@ -100,8 +100,9 @@ public class ForecastRepository {
                 INSERT INTO reorder_recommendations
                     (tenant_id, product_id, location_id, supplier_id, forecast_id,
                      quantity_on_hand, reorder_point, recommended_qty, estimated_cost,
-                     projected_stockout_on, rationale, status)
-                VALUES (current_tenant_id(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+                     projected_stockout_on, rationale, status, urgency)
+                VALUES (current_tenant_id(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open',
+                        CAST(? AS recommendation_urgency))
                 RETURNING id
                 """,
                 UUID.class,
@@ -114,6 +115,7 @@ public class ForecastRepository {
                 recommendation.recommendedQty(),
                 recommendation.estimatedCost(),
                 recommendation.projectedStockoutOn(),
-                recommendation.rationale());
+                recommendation.rationale(),
+                recommendation.urgency().wireValue());
     }
 }
