@@ -3,6 +3,7 @@ package com.example.inventory.mobile.net
 import android.content.Context
 import com.example.inventory.api.apis.AuthenticationApi
 import com.example.inventory.api.apis.CatalogApi
+import com.example.inventory.api.apis.ForecastingApi
 import com.example.inventory.api.apis.SalesApi
 import com.example.inventory.mobile.BuildConfig
 import com.example.inventory.mobile.auth.AuthInterceptor
@@ -142,6 +143,20 @@ object NetworkModule {
     @Provides
     @Singleton
     fun salesApi(retrofit: Retrofit): SalesApi = retrofit.create(SalesApi::class.java)
+
+    /**
+     * M7's forecasting endpoints: forecasts, one product's forecast, recompute,
+     * reorder recommendations and dismiss.
+     *
+     * <p>Goes through the same authenticated [retrofit] as the others, so it
+     * inherits the bearer-token interceptor and [TokenAuthenticator]'s refresh —
+     * a forecasting call on an expired token refreshes and retries rather than
+     * dropping the user to the login screen mid-scroll.
+     */
+    @Provides
+    @Singleton
+    fun forecastingApi(retrofit: Retrofit): ForecastingApi =
+        retrofit.create(ForecastingApi::class.java)
 }
 
 /** Marks the un-authenticated client used for token refresh. */

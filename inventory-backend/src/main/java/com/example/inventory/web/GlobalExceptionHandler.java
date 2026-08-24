@@ -122,6 +122,15 @@ public class GlobalExceptionHandler {
                 "stale-write");
     }
 
+    /**
+     * A malformed request parameter — 400, not the 500 a raw SQL enum cast
+     * produces. See {@link BadRequestException}.
+     */
+    @ExceptionHandler(BadRequestException.class)
+    ResponseEntity<ProblemDetail> badRequest(BadRequestException e) {
+        return problem(HttpStatus.BAD_REQUEST, "Bad request", e.getMessage(), "bad-request");
+    }
+
     @ExceptionHandler(NotFoundException.class)
     ResponseEntity<ProblemDetail> notFound(NotFoundException e) {
         return problem(HttpStatus.NOT_FOUND, "Not found", e.getMessage(), "not-found");

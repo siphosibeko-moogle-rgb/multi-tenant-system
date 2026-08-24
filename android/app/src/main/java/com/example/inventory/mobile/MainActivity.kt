@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.inventory.mobile.auth.SessionManager
+import com.example.inventory.mobile.ui.HomeScreen
 import com.example.inventory.mobile.ui.LoginScreen
 import com.example.inventory.mobile.ui.ProductListScreen
 import com.example.inventory.mobile.ui.SignUpScreen
@@ -72,10 +73,20 @@ class MainActivity : ComponentActivity() {
                             // rather than back on the sign-up form the user
                             // just completed.
                             showSignUp = false
-                            ProductListScreen(
-                                tenantName = (state as SessionManager.State.LoggedIn).tenantName,
-                                onSignOut = { session.signOut() },
-                            )
+
+                            // Still a conditional rather than a NavHost. Phase 3
+                            // introduces role-aware bottom navigation and a real
+                            // graph; adding one now would be machinery for two
+                            // destinations, and it would be rewritten then.
+                            var onSell by rememberSaveable { mutableStateOf(false) }
+                            if (onSell) {
+                                ProductListScreen(
+                                    tenantName = (state as SessionManager.State.LoggedIn).tenantName,
+                                    onSignOut = { session.signOut() },
+                                )
+                            } else {
+                                HomeScreen(onRecordSale = { onSell = true })
+                            }
                         }
                     }
                 }

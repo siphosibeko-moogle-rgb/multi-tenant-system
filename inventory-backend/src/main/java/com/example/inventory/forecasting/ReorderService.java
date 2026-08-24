@@ -64,17 +64,20 @@ import com.example.inventory.tenancy.TenantContext;
 @Service
 public class ReorderService {
 
+    private final DemandRollupJob demandRollup;
     private final DemandSeriesRepository seriesRepository;
     private final Forecaster forecaster;
     private final ForecastExplainer explainer;
     private final ForecastRepository forecasts;
     private final JdbcTemplate jdbc;
 
-    public ReorderService(DemandSeriesRepository seriesRepository,
+    public ReorderService(DemandRollupJob demandRollup,
+                          DemandSeriesRepository seriesRepository,
                           Forecaster forecaster,
                           ForecastExplainer explainer,
                           ForecastRepository forecasts,
                           @Qualifier("appDataSource") DataSource appDataSource) {
+        this.demandRollup = demandRollup;
         this.seriesRepository = seriesRepository;
         this.forecaster = forecaster;
         this.explainer = explainer;
@@ -102,14 +105,42 @@ public class ReorderService {
     }
 
     /**
-     * Recomputes every product/location with demand history, stores each
-     * forecast as current, and refreshes the open recommendations.
+     * Rolls the ledger up into {@code demand_daily}, then recomputes every
+     * product/location's forecast and refreshes the open recommendations.
+     *
+     * <h2>The rollup runs first, and that is not optional</h2>
+     *
+     * <p>This method used to start at the second stage — it read
+     * {@code demand_daily} and never refreshed it. That is wrong in a way that
+     * only shows up outside a test: {@code DemandRollupJob} is invoked nowhere
+     * else in the application, so on a real deployment {@code demand_daily}
+     * stayed empty forever, every product read {@code insufficient_data}, and
+     * the reorder list was permanently blank. Nothing errored.
+     *
+     * <p>Every M7 test missed it, and missed it the same way: each rolls up
+     * explicitly in its fixture before recomputing, because each was written to
+     * test the stage it was about. Reasonable per test, fatal in aggregate — the
+     * suite only ever exercised stage two with stage one already done by hand,
+     * so the wiring between them was covered by nothing.
+     *
+     * <p>Found by pointing the Android client at a database holding two fully
+     * seeded tenants and seven demand shapes, and getting an empty reorder list:
+     * 0 rows in {@code demand_daily}, 0 forecasts, 0 recommendations.
+     * {@code RecomputeRunsTheRollupTest} now covers it, and covers it by never
+     * calling the rollup itself.
+     *
+     * <p>"Recompute" means recompute, and a forecast is only as fresh as the
+     * demand data under it. Sequencing the two here rather than in the
+     * controller keeps CLAUDE.md §4's rule intact — controllers do HTTP only —
+     * and means a later caller cannot get the ordering wrong.
      */
     @Transactional
     public RecomputeResult recomputeAll() {
         TenantContext.currentTenantId().orElseThrow(() -> new IllegalStateException(
                 "ReorderService requires a bound tenant — see DemandRollupJob's Javadoc "
                         + "and CLAUDE.md section 12."));
+
+        demandRollup.rollUp();
 
         Map<UUID, ProductFacts> facts = productFacts();
         List<DemandSeries> allSeries = seriesRepository.loadAll();

@@ -418,7 +418,49 @@ class ForecastEndpointsHttpTest extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("the status filter is honoured")
+        @DisplayName("an upper-case status from a generated client is accepted")
+        void theStatusFilterAcceptsTheCaseAGeneratedClientSends() throws Exception {
+            ensureOpenRecommendations();
+
+            // The Android client sent status=OPEN and got a 500: Retrofit
+            // renders a @Query enum with toString(), which for the generated
+            // Kotlin enum is the constant name, so the contract's lower-case
+            // "open" arrived upper-cased. It reached CAST(? AS
+            // recommendation_status) and raised SQLSTATE 22P02.
+            //
+            // Case is accepted because it cannot mean two different things.
+            assertThat(http().get("/reorder-recommendations?status=OPEN", owner()).status())
+                    .as("an upper-case status must not be a server error — every generated "
+                            + "client using the default parameter would have hit this")
+                    .isEqualTo(200);
+            assertThat(http().get("/reorder-recommendations?status=OPEN", owner())
+                    .json().get("items").size())
+                    .as("and it must filter the same as the lower-case form, not merely "
+                            + "avoid erroring")
+                    .isEqualTo(http().get("/reorder-recommendations?status=open", owner())
+                            .json().get("items").size());
+        }
+
+        @Test
+        @DisplayName("an unknown status is a 400 with the valid values, not a 500")
+        void anUnknownStatusIsABadRequest() {
+            HttpTestClient.Response response =
+                    http().get("/reorder-recommendations?status=banana", owner());
+
+            assertThat(response.status())
+                    .as("a bad query parameter is the caller's problem to fix. A 500 tells "
+                            + "them to wait and retry, which would never work.")
+                    .isEqualTo(400);
+            assertThat(response.headers().first("Content-Type"))
+                    .startsWith("application/problem+json");
+            assertThat(response.json().get("detail").asString())
+                    .as("and it names what would work")
+                    .contains("open")
+                    .contains("dismissed");
+        }
+
+        @Test
+        @DisplayName("the status filter selects by status")
         void statusFilters() throws Exception {
             ensureOpenRecommendations();
 

@@ -55,10 +55,53 @@ public class ReorderRecommendationController {
             @RequestParam(required = false) String status,
             @RequestParam(required = false) UUID supplierId) {
 
-        String effectiveStatus = status == null || status.isBlank() ? DEFAULT_STATUS : status;
-        return queries.listRecommendations(effectiveStatus, supplierId, cursor,
+        return queries.listRecommendations(normaliseStatus(status), supplierId, cursor,
                 clampLimit(limit));
     }
+
+    /**
+     * Validates the {@code status} filter before it reaches a SQL enum cast.
+     *
+     * <h2>Why this is not just a pass-through</h2>
+     *
+     * <p>It was, and the failure was a 500. {@code CAST(? AS
+     * recommendation_status)} raises SQLSTATE 22P02 for any value outside the
+     * enum, which surfaces as {@code DataIntegrityViolationException} and an
+     * "Unhandled data access failure" — a server error for what is plainly a bad
+     * request. A caller passing {@code status=banana} deserves a 400 telling
+     * them the four valid values, not a 500 telling them nothing.
+     *
+     * <p>Found by the Android client, which sent {@code status=OPEN}: the
+     * generated Kotlin enum's {@code toString()} is the Kotlin constant name,
+     * and Retrofit uses that for a {@code @Query} enum, so the default parameter
+     * value serialised in upper case while the contract and the database enum
+     * are both lower case. Every generated client using that default would have
+     * hit it.
+     *
+     * <h2>Case-insensitive, but not otherwise lenient</h2>
+     *
+     * <p>Upper case is accepted because a case difference here cannot mean two
+     * different things — there is no {@code OPEN} distinct from {@code open} for
+     * it to be confused with — and refusing it would break a generated client
+     * over presentation. Anything that is not one of the four values is still
+     * refused: leniency about case is not leniency about meaning.
+     */
+    private String normaliseStatus(String status) {
+        if (status == null || status.isBlank()) {
+            return DEFAULT_STATUS;
+        }
+        String candidate = status.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!VALID_STATUSES.contains(candidate)) {
+            throw new com.example.inventory.web.BadRequestException(
+                    "Unknown status '" + status + "'. Valid values are "
+                            + String.join(", ", VALID_STATUSES) + ".");
+        }
+        return candidate;
+    }
+
+    /** The contract's {@code ReorderRecommendation.status} enum, in order. */
+    private static final java.util.List<String> VALID_STATUSES =
+            java.util.List.of("open", "ordered", "dismissed", "expired");
 
     /**
      * Dismiss one recommendation.
