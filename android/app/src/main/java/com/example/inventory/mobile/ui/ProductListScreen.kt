@@ -22,7 +22,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -93,6 +95,9 @@ class ProductListViewModel @Inject constructor(
     init {
         load(reset = true)
     }
+
+    /** Re-reads from the top. Used when the tab is re-entered. */
+    fun reload() = load(reset = true)
 
     fun retry() = load(reset = true)
 
@@ -223,11 +228,19 @@ fun ProductListScreen(
     onSignOut: () -> Unit,
     onOpenDetail: ((java.util.UUID, String) -> Unit)? = null,
     onBack: (() -> Unit)? = null,
+    loadKey: Int = 0,
     viewModel: ProductListViewModel = hiltViewModel(),
     saleViewModel: RecordSaleViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val saleState by saleViewModel.state.collectAsStateWithLifecycle()
+
+    // Keyed on loadKey so arriving on this tab refetches. See SignedInApp.
+    // Skips the very first composition, which the ViewModel init already covers.
+    var firstPass by remember { mutableStateOf(true) }
+    LaunchedEffect(loadKey) {
+        if (firstPass) firstPass = false else viewModel.reload()
+    }
 
     // A recorded sale changes the stock this screen is displaying, so the list
     // is reloaded when the sheet closes after a success. Without this the row

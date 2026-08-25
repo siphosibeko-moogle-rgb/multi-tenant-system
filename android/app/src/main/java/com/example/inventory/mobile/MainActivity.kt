@@ -12,6 +12,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -25,7 +26,7 @@ import com.example.inventory.mobile.ui.HomeScreen
 import com.example.inventory.mobile.ui.LoginScreen
 import com.example.inventory.mobile.ui.ProductDetailScreen
 import com.example.inventory.mobile.ui.ProductListScreen
-import com.example.inventory.mobile.ui.ReordersScreen
+import com.example.inventory.mobile.ui.SignedInApp
 import com.example.inventory.mobile.ui.SignUpScreen
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -76,41 +77,18 @@ class MainActivity : ComponentActivity() {
                             // just completed.
                             showSignUp = false
 
-                            // Still a conditional rather than a NavHost. Phase 3
-                            // introduces role-aware bottom navigation and a real
-                            // graph; adding one now would be machinery for two
-                            // destinations, and it would be rewritten then.
-                            var screen by rememberSaveable { mutableStateOf("home") }
-                            var detailId by rememberSaveable { mutableStateOf<String?>(null) }
-                            var detailName by rememberSaveable { mutableStateOf("") }
+                            val signedIn = state as SessionManager.State.LoggedIn
 
-                            when (screen) {
-                                "stock" -> ProductListScreen(
-                                    tenantName = (state as SessionManager.State.LoggedIn).tenantName,
-                                    onSignOut = { session.signOut() },
-                                    onOpenDetail = { id, name ->
-                                        detailId = id.toString()
-                                        detailName = name
-                                        screen = "detail"
-                                    },
-                                    onBack = { screen = "home" },
-                                )
+                            // A cold start has a stored token and nothing else:
+                            // no name, no tenant, no role. Fill them in before
+                            // navigation decides which tabs to show.
+                            LaunchedEffect(Unit) { session.refreshCurrentUser() }
 
-                                "detail" -> detailId?.let { id ->
-                                    ProductDetailScreen(
-                                        productId = java.util.UUID.fromString(id),
-                                        productName = detailName,
-                                        onBack = { screen = "stock" },
-                                    )
-                                }
-
-                                "reorders" -> ReordersScreen(onBack = { screen = "home" })
-
-                                else -> HomeScreen(
-                                    onRecordSale = { screen = "stock" },
-                                    onSeeAllReorders = { screen = "reorders" },
-                                )
-                            }
+                            SignedInApp(
+                                role = signedIn.role,
+                                tenantName = signedIn.tenantName,
+                                onSignOut = { session.signOut() },
+                            )
                         }
                     }
                 }

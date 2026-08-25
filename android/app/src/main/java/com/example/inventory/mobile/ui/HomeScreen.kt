@@ -132,11 +132,13 @@ class HomeViewModel @Inject constructor(
 fun HomeScreen(
     onRecordSale: () -> Unit,
     onSeeAllReorders: (() -> Unit)? = null,
+    loadKey: Int = 0,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
-    LaunchedEffect(Unit) { viewModel.load() }
+    // Keyed on loadKey so arriving on this tab refetches. See SignedInApp.
+    LaunchedEffect(loadKey) { viewModel.load() }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text("Home", style = MaterialTheme.typography.headlineMedium)

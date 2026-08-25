@@ -25,17 +25,70 @@ import kotlinx.coroutines.flow.asStateFlow
 class SessionManager @Inject constructor(
     private val tokens: TokenStore,
     private val authApi: AuthenticationApi,
+    private val usersApi: com.example.inventory.api.apis.UsersApi,
 ) : SessionExpiryHandler {
 
     sealed interface State {
         data object LoggedOut : State
-        data class LoggedIn(val displayName: String, val tenantName: String) : State
+
+        /**
+         * @param role the `role` claim's value — "owner", "manager", "clerk" or
+         *             "viewer" — or null when it is not yet known.
+         *
+         * **Null is a real state, not a placeholder to code around.** On a cold
+         * start the app has a stored token and nothing else: the role lives in
+         * the token's claims and in `GET /me`, neither of which has been read
+         * yet. [refreshCurrentUser] fills it in.
+         *
+         * Navigation must therefore treat null as "show the least, not the
+         * most" — see `RoleTabs`. Guessing generously for a moment would flash
+         * tabs a clerk is not allowed into and then remove them, which looks
+         * like the app taking something away.
+         */
+        data class LoggedIn(
+            val displayName: String,
+            val tenantName: String,
+            val role: String? = null,
+        ) : State
     }
 
     private val _state = MutableStateFlow<State>(
         if (tokens.accessToken() != null) State.LoggedIn("", "") else State.LoggedOut
     )
     val state: StateFlow<State> = _state.asStateFlow()
+
+    /**
+     * Fills in who the user is after a cold start, from `GET /me`.
+     *
+     * The token survives a restart; the details that came back with it do not,
+     * so without this the app knows it is signed in and nothing else — no name,
+     * no tenant, and no role to decide navigation by.
+     *
+     * Deliberately quiet on failure. This is supplementary: the session is
+     * already established, every screen fetches its own data and reports its own
+     * errors, and dropping the user to the login screen because one identity
+     * lookup failed would be a far worse answer than a temporarily sparse menu.
+     * A token that is genuinely dead is caught by [TokenAuthenticator] on the
+     * next real request, which is where that decision belongs.
+     */
+    suspend fun refreshCurrentUser() {
+        if (_state.value !is State.LoggedIn) {
+            return
+        }
+        try {
+            val response = usersApi.meGet()
+            val user = response.body()
+            if (response.isSuccessful && user != null) {
+                _state.value = State.LoggedIn(
+                    displayName = user.fullName,
+                    tenantName = user.tenant.name,
+                    role = user.role.value,
+                )
+            }
+        } catch (e: Exception) {
+            // See above.
+        }
+    }
 
     /**
      * @return null on success, or the error to show.
@@ -74,6 +127,7 @@ class SessionManager @Inject constructor(
             _state.value = State.LoggedIn(
                 displayName = body.user.fullName,
                 tenantName = body.user.tenant.name,
+                role = body.user.role.value,
             )
             null
         } catch (e: Exception) {
@@ -147,6 +201,7 @@ class SessionManager @Inject constructor(
             _state.value = State.LoggedIn(
                 displayName = body.user.fullName,
                 tenantName = body.user.tenant.name,
+                role = body.user.role.value,
             )
             null
         } catch (e: Exception) {

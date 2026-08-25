@@ -162,6 +162,18 @@ object NetworkModule {
     @Singleton
     fun forecastingApi(retrofit: Retrofit): ForecastingApi =
         retrofit.create(ForecastingApi::class.java)
+
+    /** `GET /me` and the user directory. */
+    @Provides
+    @Singleton
+    fun usersApi(retrofit: Retrofit): com.example.inventory.api.apis.UsersApi =
+        retrofit.create(com.example.inventory.api.apis.UsersApi::class.java)
+
+    /** Purchase orders, for the Create-order shortcut off a recommendation. */
+    @Provides
+    @Singleton
+    fun purchasingApi(retrofit: Retrofit): com.example.inventory.api.apis.PurchasingApi =
+        retrofit.create(com.example.inventory.api.apis.PurchasingApi::class.java)
 }
 
 /** Marks the un-authenticated client used for token refresh. */
