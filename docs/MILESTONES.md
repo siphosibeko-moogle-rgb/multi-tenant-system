@@ -687,10 +687,76 @@ So when this endpoint lands, the Android work is adding one tile that reads
 be marked incomplete for its absence.
 
 **Done when**
-- Valuation `asOf` a past date matches a manual replay of the ledger to that date
-- A sale captured with the phone in airplane mode syncs on reconnect and is
+- [x] Valuation `asOf` a past date matches a manual replay of the ledger to that date
+- [ ] A sale captured with the phone in airplane mode syncs on reconnect and is
 recorded exactly once
-- Report endpoints stay under ~500 ms against a tenant with 100k movements
+- [x] Report endpoints stay under ~500 ms against a tenant with 100k movements
+
+### The four report endpoints — done
+
+`GET /reports/dashboard`, `/reports/sales-summary`,
+`/reports/inventory-valuation` and `/reports/top-products` are implemented,
+gated to owner and manager, and covered by 45 HTTP-level tests.
+**`GET /sync/changes` and the offline outbox are still open** — the second
+"Done when" above is theirs, not the reports'.
+
+Four figures in these endpoints were decisions rather than implementations.
+Each is argued in **`docs/adr/reporting.md`**, which is the file to read before
+changing any number in `reporting/`:
+
+| Figure | Decision | ADR |
+|---|---|---|
+| `grossProfit` | the `sale_items.unit_cost` snapshot, never a fresh `products.cost_price` | §1 |
+| `inventoryValue` / `asOf` | current state at current cost; a past `asOf` is a **real ledger replay** of the quantities, at **today's prices** — stated in the contract because the schema has no price history | §2 |
+| `salesTrend` | a fixed 14 days, deliberately **not** following `period` | §3 |
+| `topProducts` | ranked by **units sold**, the same key on both endpoints that surface it | §4 |
+
+Verified live against M6 seed data (tenant `riverside-682407896`, 30 weeks of
+history), not only in tests:
+
+```
+GET /reports/dashboard?period=month
+  salesTotal 4620.00 over 96 sales, grossProfit 2156.00, inventoryValue 7656.00
+manual SQL over sale_items/sales for the same window
+  revenue 4620.00, cost 2464.00 (-> profit 2156.00), 96 sales     ✓ agree
+
+GET /reports/inventory-valuation?asOf=2026-04-01
+  totalCostValue 5296.00, totalRetailValue 9930.00, productCount 5
+manual replay: SUM(quantity_delta) to that date, priced from products
+  5296.00, 9930.00, 5                                              ✓ agree
+
+GET /reports/top-products?order=worst
+  leads with Discontinued Fruitcake, unitsSold 0.000
+```
+
+That last line is the one worth keeping. The dead-stock product has **no rows
+in `sale_items` at all** for the window, so it is invisible to the aggregate
+every other figure is built from — `order=worst` finds it only because the
+query left-joins the catalogue. A "worst movers" list that silently excluded
+the actual worst would have looked entirely correct.
+
+A second tenant on the same deployment (`harborview-682407896`) reports
+4935.00 over 106 sales for the same window. Neither sees the other; a leak
+would show as their sum.
+
+Live timings against that tenant, over HTTP: dashboard 64 ms, a 237-day
+day-grouped sales summary 50 ms, a valuation replay 21 ms, worst movers 26 ms.
+`ReportSeedDataTest` additionally asserts the **plan**, since a timing
+assertion alone passes on a small dataset for a query that is quadratic: the
+sales window must be an `Index Scan using sales_tenant_time_idx` and the test
+fails on `Seq Scan on sales`.
+
+**Two consequences to carry forward.**
+
+1. **The Android Home tile is owner/manager only.** Every one of these
+responses carries cost or margin, and `grossProfit` and `inventoryValue` are
+both in `DashboardSummary`'s `required` list, so there is no honest redacted
+variant for a clerk. `tabsFor(role)` is the existing mechanism; a clerk's Home
+must not call the endpoint rather than be shown a 403. ADR §5 — which also
+records that **viewer** is the gate most likely to want widening, and exactly
+how to widen it.
+2. **`salesTotal` is net of tax.** An owner comparing it with a till roll will
+see a smaller number. The tile should read "net sales". ADR §0.
 
 ---
 
