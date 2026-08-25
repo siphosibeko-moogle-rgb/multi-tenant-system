@@ -23,7 +23,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.inventory.mobile.auth.SessionManager
 import com.example.inventory.mobile.ui.HomeScreen
 import com.example.inventory.mobile.ui.LoginScreen
+import com.example.inventory.mobile.ui.ProductDetailScreen
 import com.example.inventory.mobile.ui.ProductListScreen
+import com.example.inventory.mobile.ui.ReordersScreen
 import com.example.inventory.mobile.ui.SignUpScreen
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -78,14 +80,36 @@ class MainActivity : ComponentActivity() {
                             // introduces role-aware bottom navigation and a real
                             // graph; adding one now would be machinery for two
                             // destinations, and it would be rewritten then.
-                            var onSell by rememberSaveable { mutableStateOf(false) }
-                            if (onSell) {
-                                ProductListScreen(
+                            var screen by rememberSaveable { mutableStateOf("home") }
+                            var detailId by rememberSaveable { mutableStateOf<String?>(null) }
+                            var detailName by rememberSaveable { mutableStateOf("") }
+
+                            when (screen) {
+                                "stock" -> ProductListScreen(
                                     tenantName = (state as SessionManager.State.LoggedIn).tenantName,
                                     onSignOut = { session.signOut() },
+                                    onOpenDetail = { id, name ->
+                                        detailId = id.toString()
+                                        detailName = name
+                                        screen = "detail"
+                                    },
+                                    onBack = { screen = "home" },
                                 )
-                            } else {
-                                HomeScreen(onRecordSale = { onSell = true })
+
+                                "detail" -> detailId?.let { id ->
+                                    ProductDetailScreen(
+                                        productId = java.util.UUID.fromString(id),
+                                        productName = detailName,
+                                        onBack = { screen = "stock" },
+                                    )
+                                }
+
+                                "reorders" -> ReordersScreen(onBack = { screen = "home" })
+
+                                else -> HomeScreen(
+                                    onRecordSale = { screen = "stock" },
+                                    onSeeAllReorders = { screen = "reorders" },
+                                )
                             }
                         }
                     }

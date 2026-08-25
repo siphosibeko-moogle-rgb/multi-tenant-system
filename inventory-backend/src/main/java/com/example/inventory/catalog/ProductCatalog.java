@@ -59,15 +59,41 @@ public class ProductCatalog {
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
 
+    /**
+     * <p>{@code reorder_point} is the EFFECTIVE one — the product's own if set,
+     * otherwise the current forecast's — exactly as {@code v_stock_status}
+     * computes it.
+     *
+     * <p>It used to be {@code p.reorder_point} alone, and that was wrong from
+     * the moment M7 started writing forecast reorder points. The CASE that
+     * derives {@code stockState} was faithfully mirrored between here and the
+     * view, so the logic never diverged; the <em>input</em> did. The view
+     * coalesced in the forecast's figure and this did not, so the same product
+     * at the same instant came back {@code ok} from {@code GET /products} and
+     * {@code reorder} from {@code GET /inventory}.
+     *
+     * <p>On screen that read as the Stock list marking a product fine while the
+     * reorder list told the shop owner to order it — a contradiction between two
+     * screens with no way for them to tell which was right. Found by building
+     * both screens and looking at them, not by any test: {@code StockStateTest}
+     * compares the two CASE expressions, which agreed all along.
+     *
+     * <p>The join must stay filtered to {@code is_current}: {@code forecasts}
+     * keeps superseded rows for accuracy scoring, and joining them all would
+     * multiply every product row by its forecast history.
+     */
     private static final String PRODUCT_COLUMNS = """
             SELECT p.id, p.sku, p.barcode, p.name, p.description, p.category_id,
                    p.unit_of_measure, p.cost_price, p.selling_price, p.tax_rate,
-                   p.reorder_point, p.is_tracked, p.is_active, p.allow_negative_stock,
+                   COALESCE(p.reorder_point, MAX(f.reorder_point)) AS reorder_point,
+                   p.is_tracked, p.is_active, p.allow_negative_stock,
                    p.updated_at, p.version,
                    COALESCE(SUM(ps.quantity_on_hand), 0)   AS quantity_on_hand,
                    COALESCE(SUM(ps.quantity_available), 0) AS quantity_available
             FROM products p
             LEFT JOIN product_stock ps ON ps.product_id = p.id
+            LEFT JOIN forecasts f
+                   ON f.tenant_id = p.tenant_id AND f.product_id = p.id AND f.is_current
             """;
 
     private static final String PRODUCT_GROUP_BY = " GROUP BY p.id ";

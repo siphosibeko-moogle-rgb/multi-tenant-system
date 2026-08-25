@@ -48,6 +48,7 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class ProductListViewModel @Inject constructor(
     private val catalog: CatalogApi,
+    private val inventory: com.example.inventory.api.apis.InventoryApi,
 ) : ViewModel() {
 
     /**
@@ -64,6 +65,21 @@ class ProductListViewModel @Inject constructor(
         val loadingNextPage: Boolean = false,
         val error: ApiError? = null,
         val nextCursor: String? = null,
+        /**
+         * Days of cover per product, from `GET /inventory`.
+         *
+         * A separate map rather than a field on [Product] because the contract
+         * does not put it there: `Product` carries `stockState` but **not**
+         * `daysOfCover`, which lives on `StockStatus`. Both come from the
+         * server; neither is computed here.
+         *
+         * Absent for a product means the server did not give a figure — either
+         * the inventory call has not returned yet, or it returned `null`, which
+         * `StockStatus` explicitly permits and which means "no meaningful cover"
+         * (no demand rate to divide by), not "zero days left". The row shows
+         * nothing in that case rather than a misleading 0.
+         */
+        val daysOfCover: Map<java.util.UUID, java.math.BigDecimal> = emptyMap(),
     ) {
         /** Empty only once the first page has actually come back without error. */
         val isEmpty: Boolean get() = products.isEmpty() && !loadingFirstPage && error == null
@@ -130,12 +146,53 @@ class ProductListViewModel @Inject constructor(
                     error = null,
                     nextCursor = page?.nextCursor,
                 )
+
+                loadDaysOfCover()
             } catch (e: Exception) {
                 // A stopped backend arrives here as an IOException. It must not
                 // escape the coroutine — an M3 acceptance criterion is that
                 // killing the backend produces a readable error, not a crash.
                 fail(ApiError.fromNetworkFailure(e), reset)
             }
+        }
+    }
+
+    /**
+     * Fills in days of cover from `GET /inventory`.
+     *
+     * <h2>Why a second call, and why its failure is not the screen's failure</h2>
+     *
+     * `daysOfCover` is on `StockStatus`, not on `Product` — so it needs the
+     * inventory endpoint. Deriving it instead (on hand ÷ some rate) is exactly
+     * the local calculation this round forbids, and the rate it would need is
+     * the forecast's, which this screen has no business recomputing.
+     *
+     * A failure here leaves the map empty and is **deliberately swallowed**: the
+     * product list, its stock levels and the Sell action all came back fine, and
+     * failing the whole screen because a supplementary figure did not arrive
+     * would take away working function to report a missing ornament. The rows
+     * simply omit cover, which is the same thing they do when the server sends
+     * null for it.
+     *
+     * `StockStatus` is per LOCATION, so a product stocked in two places returns
+     * two rows. The larger cover is kept — of the places this product is held,
+     * that is the one that will last longest, and showing the smaller would
+     * imply the shop runs out sooner than it does.
+     */
+    private suspend fun loadDaysOfCover() {
+        try {
+            val response = inventory.inventoryGet(limit = PAGE_SIZE)
+            if (!response.isSuccessful) {
+                return
+            }
+            val byProduct = response.body()?.items.orEmpty()
+                .mapNotNull { status -> status.daysOfCover?.let { status.productId to it } }
+                .groupBy({ it.first }, { it.second })
+                .mapValues { (_, covers) -> covers.max() }
+
+            _state.value = _state.value.copy(daysOfCover = byProduct)
+        } catch (e: Exception) {
+            // See above: a supplementary figure, not the screen's reason to exist.
         }
     }
 
@@ -164,6 +221,8 @@ class ProductListViewModel @Inject constructor(
 fun ProductListScreen(
     tenantName: String,
     onSignOut: () -> Unit,
+    onOpenDetail: ((java.util.UUID, String) -> Unit)? = null,
+    onBack: (() -> Unit)? = null,
     viewModel: ProductListViewModel = hiltViewModel(),
     saleViewModel: RecordSaleViewModel = hiltViewModel(),
 ) {
@@ -204,7 +263,10 @@ fun ProductListScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column {
-                Text("Products", style = MaterialTheme.typography.headlineSmall)
+                onBack?.let { back ->
+                    TextButton(onClick = back) { Text("← Home") }
+                }
+                Text("Stock", style = MaterialTheme.typography.headlineSmall)
                 if (tenantName.isNotBlank()) {
                     Text(tenantName, style = MaterialTheme.typography.bodySmall)
                 }
@@ -233,7 +295,14 @@ fun ProductListScreen(
 
             else -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 items(state.products, key = { it.id.toString() }) { product ->
-                    ProductRow(product, onClick = { saleViewModel.startSale(product) })
+                    ProductRow(
+                        product = product,
+                        daysOfCover = state.daysOfCover[product.id],
+                        onClick = { saleViewModel.startSale(product) },
+                        onOpenDetail = onOpenDetail?.let { open ->
+                            { open(product.id, product.name) }
+                        },
+                    )
                     HorizontalDivider()
                 }
 
@@ -273,7 +342,12 @@ fun ProductListScreen(
  * reaching for a product name rather than a small target is the common case.
  */
 @Composable
-private fun ProductRow(product: Product, onClick: () -> Unit) {
+private fun ProductRow(
+    product: Product,
+    daysOfCover: java.math.BigDecimal?,
+    onClick: () -> Unit,
+    onOpenDetail: (() -> Unit)? = null,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -288,6 +362,16 @@ private fun ProductRow(product: Product, onClick: () -> Unit) {
                 product.sku,
                 style = MaterialTheme.typography.bodySmall,
             )
+            // Only when the server sent one. A null daysOfCover means there is
+            // no meaningful figure — no demand rate to divide by — and printing
+            // "0 days" for it would say the shelf is about to empty when the
+            // truth is that nothing is selling.
+            daysOfCover?.let { cover ->
+                Text(
+                    "about ${cover.setScale(0, java.math.RoundingMode.HALF_UP)} days of cover",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
         Column(
             horizontalAlignment = Alignment.End,
@@ -304,6 +388,9 @@ private fun ProductRow(product: Product, onClick: () -> Unit) {
         // Not disabled for out-of-stock. Overselling must be refused by the
         // ledger and reported with the real numbers (T12) — hiding the button
         // would move that decision to a cached quantity the client cannot trust.
+        onOpenDetail?.let { detail ->
+            TextButton(onClick = detail) { Text("Details") }
+        }
         TextButton(onClick = onClick) { Text("Sell") }
     }
 }

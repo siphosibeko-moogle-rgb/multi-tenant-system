@@ -155,6 +155,11 @@ object NetworkModule {
      */
     @Provides
     @Singleton
+    fun inventoryApi(retrofit: Retrofit): com.example.inventory.api.apis.InventoryApi =
+        retrofit.create(com.example.inventory.api.apis.InventoryApi::class.java)
+
+    @Provides
+    @Singleton
     fun forecastingApi(retrofit: Retrofit): ForecastingApi =
         retrofit.create(ForecastingApi::class.java)
 }

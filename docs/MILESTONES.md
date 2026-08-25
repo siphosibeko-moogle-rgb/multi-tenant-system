@@ -667,6 +667,25 @@ make deliberately, not a side effect of needing a nightly job.
 - Dashboard, sales summary, inventory valuation (including `asOf` replay), top products
 - `GET /sync/changes` delta feed; outbox replay path on the client
 
+**`GET /reports/dashboard` is blocking a shipped Android screen — this is a
+BACKEND item, not an Android gap.** The Home screen was built without its
+"today's sales total" tile because the endpoint does not exist. The contract
+declares it and `DashboardSummary` requires ten fields (`salesTotal`,
+`salesCount`, `grossProfit`, `inventoryValue`, `lowStockCount`,
+`outOfStockCount`, `openRecommendationCount`, `salesTrend`, `topProducts`,
+`period`), so there is no honest stub: a partial response either breaks the
+contract's `required` list or invents figures.
+
+The client deliberately does **not** compute the total by summing
+`GET /sales` — that would be a second implementation of a number this
+milestone will define properly, and the two would disagree about returns,
+discounts and tax without either looking wrong. Home shows nothing there
+rather than something approximate.
+
+So when this endpoint lands, the Android work is adding one tile that reads
+`salesTotal` — nothing in Phase 2 or 3 owes it, and no Android phase should
+be marked incomplete for its absence.
+
 **Done when**
 - Valuation `asOf` a past date matches a manual replay of the ledger to that date
 - A sale captured with the phone in airplane mode syncs on reconnect and is
