@@ -1,6 +1,7 @@
 package com.example.inventory.mobile.auth
 
 import com.example.inventory.api.apis.AuthenticationApi
+import com.example.inventory.api.apis.UsersApi
 import com.example.inventory.api.infrastructure.Serializer
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -61,16 +62,27 @@ class SessionManagerTest {
         server.shutdown()
     }
 
-    private fun api(): AuthenticationApi = Retrofit.Builder()
+    private fun retrofit(): Retrofit = Retrofit.Builder()
         .baseUrl(server.url("/api/v1/"))
         .addConverterFactory(MoshiConverterFactory.create(Serializer.moshi))
         .build()
-        .create(AuthenticationApi::class.java)
+
+    private fun api(): AuthenticationApi = retrofit().create(AuthenticationApi::class.java)
+
+    /**
+     * `GET /me`, which SessionManager calls to learn the display name, tenant
+     * name and role. None of these tests exercises it — the server is never
+     * given a response for it, so the call fails and SessionManager falls back
+     * to the LoggedIn state it can derive without it. That is deliberate: what
+     * is under test here is sign-out, and a real UsersApi keeps the fixture
+     * honest about the constructor rather than papering over it with a mock.
+     */
+    private fun usersApi(): UsersApi = retrofit().create(UsersApi::class.java)
 
     @Test
     fun `signOut clears the tokens and reports LoggedOut`() {
         val tokens = FakeTokenStore(access = "an-access-token", refresh = "a-refresh-token")
-        val session = SessionManager(tokens, api())
+        val session = SessionManager(tokens, api(), usersApi())
 
         // A stored access token means the app starts up signed in.
         assertTrue(session.state.value is SessionManager.State.LoggedIn)
@@ -96,7 +108,7 @@ class SessionManagerTest {
         // walk away from the session. Getting to LoggedOut must not depend on
         // the token wipe succeeding.
         val tokens = FakeTokenStore(access = "an-access-token", failOnClear = true)
-        val session = SessionManager(tokens, api())
+        val session = SessionManager(tokens, api(), usersApi())
 
         session.signOut()
 
@@ -113,7 +125,7 @@ class SessionManagerTest {
         // routes must end at exactly one state, or the app can be signed out
         // according to the network layer and signed in according to the UI.
         val tokens = FakeTokenStore(access = "an-access-token")
-        val session = SessionManager(tokens, api())
+        val session = SessionManager(tokens, api(), usersApi())
 
         session.onSessionExpired()
 
