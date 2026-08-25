@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import com.example.inventory.inventory.InsufficientStockException;
 
@@ -129,6 +130,44 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BadRequestException.class)
     ResponseEntity<ProblemDetail> badRequest(BadRequestException e) {
         return problem(HttpStatus.BAD_REQUEST, "Bad request", e.getMessage(), "bad-request");
+    }
+
+    /**
+     * A typed query or path parameter the binder could not convert — 400.
+     *
+     * <p>{@code ?asOf=not-a-date}, {@code ?limit=lots},
+     * {@code /products/not-a-uuid}. Every one of these was a <strong>500</strong>
+     * until M8, across every endpoint in the application, not only the reports.
+     *
+     * <p>Two reasons it survived so long. The catch-all below already converts
+     * Spring MVC's own exceptions by checking {@code instanceof ErrorResponse},
+     * and most of them do implement it — a missing required parameter is
+     * correctly a 400 through that branch, which makes the family look covered.
+     * {@code MethodArgumentTypeMismatchException} does not implement it, so a
+     * parameter that is <em>present and unparseable</em> falls through to the
+     * generic 500 while a parameter that is <em>absent</em> gets a 400. Nothing
+     * had sent a malformed one before: M8 is the first milestone with typed
+     * {@code LocalDate} parameters on a query string, and the test that found it
+     * was checking something else.
+     *
+     * <p>The distinction matters to a client rather than being cosmetic. A 500
+     * says the server failed and the request should be retried, so a mobile
+     * client with any retry logic at all will send the same bad date forever;
+     * a 400 says the request is wrong and can never work. Same reasoning as the
+     * enum-cast 500 that {@link BadRequestException} was written for.
+     *
+     * <p>The detail names the parameter and the type expected, and does
+     * <strong>not</strong> echo the value back. The name is what the caller needs
+     * to fix it; the value is something they already have, and reflecting
+     * caller-supplied text into a response body is a habit worth not forming.
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    ResponseEntity<ProblemDetail> typeMismatch(MethodArgumentTypeMismatchException e) {
+        String type = e.getRequiredType() == null
+                ? "the expected type" : e.getRequiredType().getSimpleName();
+        return problem(HttpStatus.BAD_REQUEST, "Bad request",
+                "Parameter '" + e.getName() + "' could not be read as " + type + ".",
+                "bad-request");
     }
 
     @ExceptionHandler(NotFoundException.class)
