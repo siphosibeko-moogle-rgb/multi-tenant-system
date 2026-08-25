@@ -39,7 +39,46 @@
 --
 -- Mirrored by ProductCatalog.stockState for the single-product reads, which does
 -- not go through this view. The two must agree; StockStateTest asserts they do.
-CREATE OR REPLACE VIEW v_stock_status AS
+-- ---------------------------------------------------------------------
+-- security_invoker: the most important word in this file (M8)
+-- ---------------------------------------------------------------------
+--
+-- WITHOUT IT, THIS VIEW RETURNS EVERY TENANT'S ROWS.
+--
+-- A PostgreSQL view executes with the privileges and the RLS context of its
+-- OWNER unless `security_invoker = true` is set, and that default is `false`.
+-- This view is created by Flyway as `inventory_owner`, which is a superuser --
+-- and a superuser bypasses row-level security entirely, FORCE or no FORCE. So
+-- `inventory_app` reading the view got the owner's unrestricted view of
+-- `product_stock` and `products`, with `app.tenant_id` bound and ignored.
+--
+-- Measured on the local database with two seeded tenants, as inventory_app,
+-- with app.tenant_id set to one of them:
+--
+--     SELECT count(*), count(DISTINCT tenant_id) FROM product_stock;   -- 7,  1
+--     SELECT count(*), count(DISTINCT tenant_id) FROM v_stock_status;  -- 41, 7
+--
+-- Exactly the failure CLAUDE.md §10 describes: it does not throw, it returns
+-- rows.
+--
+-- WHY NOTHING CAUGHT IT FOR SIX MILESTONES. T11's three sweeps enumerate
+-- tenant-scoped TABLES. A view has no `relrowsecurity` and no policy of its
+-- own, so it was never a candidate for a list whose entries are checked for
+-- RLS -- and the hand-written lists that exist precisely so they cannot shrink
+-- to match a broken catalogue had no line for this.
+--
+-- AND WHY NO ENDPOINT WAS ACTUALLY LEAKING. `GET /inventory` is the only
+-- reader, and it INNER JOINs `locations` and `product_stock`, both of which
+-- ARE policy-scoped on the caller's connection. Those joins narrow the leaked
+-- rows back to the caller's tenant -- 41 rows become 7 again. The protection
+-- was real but accidental: it came from a join written to fetch a location
+-- name. The first query to read this view WITHOUT such a join was M8's
+-- dashboard low-stock count, and it was wrong on the first run.
+--
+-- Do not remove this clause, and do not add a view without it. Every view over
+-- a tenant-scoped table needs it, and `ViewSecurityInvokerTest` fails on any
+-- view in the schema that lacks it rather than naming this one.
+CREATE OR REPLACE VIEW v_stock_status WITH (security_invoker = true) AS
 SELECT
     ps.tenant_id,
     ps.product_id,
