@@ -513,6 +513,126 @@ class ResponseRequiredFieldsHttpTest extends AbstractIntegrationTest {
         satisfies(response.json(), "Problem");
     }
 
+    /**
+     * Required names for a response schema declared <strong>inline on a path</strong>
+     * rather than as a named component.
+     *
+     * <p>Three of M8's four report responses are written that way in the
+     * contract, so {@link #requiredOf} cannot reach them — and a response this
+     * sweep cannot reach is a response whose promises nothing checks, which is
+     * the gap the whole test exists to close. So the reader follows the path
+     * instead of the schema name.
+     *
+     * @param pointer the name of an array property whose element type is wanted,
+     *                or null for the response schema itself (unwrapping a
+     *                top-level array)
+     */
+    private static List<String> requiredOfPathResponse(String path, String pointer) {
+        io.swagger.v3.oas.models.PathItem item = contract.getPaths().get(path);
+        assertThat(item).as("the contract must declare %s", path).isNotNull();
+
+        Schema<?> schema = item.getGet().getResponses().get("200")
+                .getContent().get("application/json").getSchema();
+        assertThat(schema).as("%s must declare a 200 application/json schema", path).isNotNull();
+
+        if (pointer != null) {
+            Schema<?> property = findProperty(schema, pointer);
+            assertThat(property).as("%s must declare %s", path, pointer).isNotNull();
+            schema = property.getItems() != null ? property.getItems() : property;
+        } else if (schema.getItems() != null) {
+            schema = schema.getItems();
+        }
+
+        List<String> required = new ArrayList<>();
+        collectRequired(schema, required);
+        assertThat(required)
+                .as("%s (%s) declares no required fields, so this checks nothing", path, pointer)
+                .isNotEmpty();
+        return required;
+    }
+
+    // ------------------------------------------------------------------
+    // M8 reports
+    // ------------------------------------------------------------------
+
+    /**
+     * The reports need something to report on, and this class's fixture has no
+     * sales until one is made. Called by each report test rather than seeded
+     * once, so none of them depends on which of the sale tests above happened to
+     * run first — JUnit promises no ordering, and a report test that passed only
+     * after a particular sibling had run would be a flake in waiting.
+     */
+    private void sellSomething() {
+        http().postWithToken("/inventory/adjustments", """
+                {"productId":"%s","quantityDelta":30,"reason":"opening"}
+                """.formatted(productId), ownerToken());
+        http().postWithToken("/sales", """
+                {"lines":[{"productId":"%s","quantity":3}]}
+                """.formatted(productId), ownerToken());
+    }
+
+    private static String todayIso() {
+        return java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString();
+    }
+
+    private static String daysAgoIso(int days) {
+        return java.time.LocalDate.now(java.time.ZoneOffset.UTC).minusDays(days).toString();
+    }
+
+    @Test
+    @DisplayName("GET /reports/dashboard satisfies DashboardSummary, its trend and its topProducts")
+    void dashboard() {
+        sellSomething();
+
+        var response = http().get("/reports/dashboard", ownerToken());
+        assertThat(response.status()).isEqualTo(200);
+
+        satisfies(response.json(), "DashboardSummary");
+        eachSatisfies(response.json().get("salesTrend"), "DashboardSummary.salesTrend[]",
+                requiredOfArrayProperty("DashboardSummary", "salesTrend"));
+        eachSatisfies(response.json().get("topProducts"), "DashboardSummary.topProducts[]",
+                requiredOfArrayProperty("DashboardSummary", "topProducts"));
+    }
+
+    @Test
+    @DisplayName("GET /reports/sales-summary satisfies its inline bucket schema")
+    void salesSummary() {
+        sellSomething();
+
+        var response = http().get("/reports/sales-summary?from=%s&to=%s"
+                .formatted(daysAgoIso(6), todayIso()), ownerToken());
+        assertThat(response.status()).isEqualTo(200);
+
+        satisfies(response.json(), "sales-summary body",
+                requiredOfPathResponse("/reports/sales-summary", null));
+        eachSatisfies(response.json().get("buckets"), "sales-summary bucket",
+                requiredOfPathResponse("/reports/sales-summary", "buckets"));
+    }
+
+    @Test
+    @DisplayName("GET /reports/inventory-valuation satisfies its inline schema")
+    void inventoryValuation() {
+        sellSomething();
+
+        var response = http().get("/reports/inventory-valuation", ownerToken());
+        assertThat(response.status()).isEqualTo(200);
+
+        satisfies(response.json(), "inventory-valuation body",
+                requiredOfPathResponse("/reports/inventory-valuation", null));
+    }
+
+    @Test
+    @DisplayName("GET /reports/top-products satisfies its inline row schema")
+    void topProducts() {
+        sellSomething();
+
+        var response = http().get("/reports/top-products", ownerToken());
+        assertThat(response.status()).isEqualTo(200);
+
+        eachSatisfies(response.json(), "top-products row",
+                requiredOfPathResponse("/reports/top-products", null));
+    }
+
     @Test
     @DisplayName("an ordinary error satisfies Problem")
     void problem() {

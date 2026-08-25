@@ -1143,9 +1143,25 @@ paths:
     get:
       tags: [Reports]
       summary: Home screen summary
+      description: |
+        Owner and manager only. Every field below carries cost or margin, and
+        `grossProfit` and `inventoryValue` are both required — so there is no
+        redacted variant for a clerk or a viewer. See docs/adr/reporting.md §5.
+
+        All money is **net of tax**, net of returns, and excludes voided sales.
+        A shop owner comparing `salesTotal` with a till roll will see a smaller
+        number, because the till roll includes VAT. Label it "net sales".
       parameters:
         - name: period
           in: query
+          description: |
+            A rolling window ending now, in the tenant's timezone: `today` is
+            since local midnight, `week` the last 7 days, `month` the last 30.
+            Not calendar periods — a calendar week makes Monday morning look
+            like the business collapsed.
+
+            Scopes `salesTotal`, `salesCount`, `grossProfit` and `topProducts`.
+            Deliberately does NOT scope `salesTrend`.
           schema: { type: string, enum: [today, week, month], default: week }
       responses:
         '200':
@@ -1158,6 +1174,15 @@ paths:
     get:
       tags: [Reports]
       summary: Sales totals bucketed over time
+      description: |
+        Owner and manager only. `revenue` is the same figure as the dashboard's
+        `salesTotal`, computed from the same SQL: ex-tax, net of returns, voided
+        sales excluded. `grossProfit` uses the cost snapshotted on each sale
+        line at sale time, so a later change to a product's cost price does not
+        rewrite what a past period earned.
+
+        Buckets with no sales are emitted as zeroes rather than omitted, so a
+        chart does not draw a line between two non-adjacent days.
       parameters:
         - name: from
           in: query
@@ -1194,11 +1219,38 @@ paths:
     get:
       tags: [Reports]
       summary: What the stock on hand is worth
+      description: |
+        Owner and manager only.
+
+        **`asOf` replays the QUANTITIES but not the PRICES.** The quantity at a
+        past date is exact — it is `SUM(quantity_delta)` over an append-only
+        ledger, which is the same arithmetic `product_stock` performs, stopped
+        early. The prices are not: `products.cost_price` and `selling_price`
+        have no history in this schema, so a valuation `asOf` last March values
+        last March's quantities at today's prices.
+
+        That hybrid is deliberate and is stated here rather than left to be
+        discovered. Costing a past date properly means choosing between
+        weighted-average and FIFO over `stock_movements.unit_cost`, which
+        changes reported profit permanently and is a decision rather than a
+        query. See docs/adr/reporting.md §2.
       parameters:
-        - $ref: '#/components/parameters/LocationIdQuery'
+        # NOT components/parameters/LocationIdQuery, which says it defaults to
+        # the tenant's default location. That default was written for stock
+        # listings; for a valuation it is a number that is wrong without saying
+        # so, since a two-location shop asking what its stock is worth would be
+        # told the worth of some of it.
+        - name: locationId
+          in: query
+          description: Defaults to ALL locations, not the tenant's default one
+          schema: { type: string, format: uuid }
         - name: asOf
           in: query
-          description: Valuation at a past date, replayed from the ledger
+          description: |
+            Valuation at a past date, replayed from the ledger. Defaults to
+            today in the tenant's timezone, and is echoed back either way so a
+            client never has to guess what "today" meant to the server. A
+            future date is refused.
           schema: { type: string, format: date }
       responses:
         '200':
@@ -1218,6 +1270,17 @@ paths:
     get:
       tags: [Reports]
       summary: Best and worst movers
+      description: |
+        Owner and manager only.
+
+        **Ranked by `unitsSold`, not by revenue** — here and in the dashboard's
+        `topProducts`, one key and never two. `revenue` and `grossMarginPct`
+        are reported so both can be seen, but they are not the ordering.
+
+        `order=worst` includes products that sold nothing at all, at
+        `unitsSold: 0`; they are the worst movers, and an aggregate over sale
+        lines cannot see them. `order=best` excludes them. See
+        docs/adr/reporting.md §4.
       parameters:
         - name: from
           in: query
@@ -2036,16 +2099,45 @@ components:
       type: object
       required: [period, salesTotal, salesCount, grossProfit, inventoryValue, lowStockCount, outOfStockCount, openRecommendationCount, salesTrend, topProducts]
       properties:
-        period: { type: string }
-        salesTotal: { type: number }
-        salesCount: { type: integer }
-        grossProfit: { type: number }
-        inventoryValue: { type: number }
-        lowStockCount: { type: integer }
-        outOfStockCount: { type: integer }
-        openRecommendationCount: { type: integer }
+        period:
+          type: string
+          description: The window requested, echoed back
+        salesTotal:
+          type: number
+          description: |
+            Net sales over `period`: ex-tax, net of returns, voided sales
+            excluded. NOT the till total, which includes tax.
+        salesCount:
+          type: integer
+          description: |
+            Non-voided sales in the window. A fully refunded sale still counts;
+            it happened, and someone was served.
+        grossProfit:
+          type: number
+          description: |
+            `salesTotal` minus cost of goods, where cost is the price
+            snapshotted onto each sale line at sale time. A later change to a
+            product's cost price does not move this figure.
+        inventoryValue:
+          type: number
+          description: |
+            Current stock on hand at the CURRENT cost price — a statement about
+            now, not a historical figure, and so not the same kind of number as
+            `grossProfit`.
+        lowStockCount:
+          type: integer
+          description: Products at or below their effective reorder point
+        outOfStockCount:
+          type: integer
+        openRecommendationCount:
+          type: integer
         salesTrend:
           type: array
+          description: |
+            **Always the last 14 days**, regardless of `period`. Fourteen so
+            every weekday appears twice and a Saturday can be read against last
+            Saturday; fixed, because `period=today` would otherwise produce a
+            one-point "trend". Days with no sales are present, at zero.
           items:
             type: object
             required: [day, revenue]
@@ -2054,6 +2146,10 @@ components:
               revenue: { type: number }
         topProducts:
           type: array
+          description: |
+            The top 5 over `period`, **ranked by unitsSold** — the same key
+            GET /reports/top-products uses. Products that sold nothing are not
+            listed here.
           items:
             type: object
             required: [productId, name, unitsSold]
