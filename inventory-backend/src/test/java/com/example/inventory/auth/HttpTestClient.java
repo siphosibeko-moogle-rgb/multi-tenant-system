@@ -88,6 +88,25 @@ public final class HttpTestClient {
         return send(request);
     }
 
+    /**
+     * POST with arbitrary extra headers — {@code Idempotency-Key}, so far.
+     *
+     * <p>Separate from {@link #postWithToken} rather than replacing it: every
+     * existing caller passes no extra headers, and widening the common helper's
+     * signature would mean touching a hundred call sites to express nothing.
+     */
+    public Response postWithHeaders(String path, String jsonBody, String bearerToken,
+                                    java.util.Map<String, String> headers) {
+        HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(baseUrl + path))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(jsonBody));
+        if (bearerToken != null) {
+            request.header("Authorization", "Bearer " + bearerToken);
+        }
+        headers.forEach(request::header);
+        return send(request);
+    }
+
     public Response get(String path, String bearerToken) {
         HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(baseUrl + path)).GET();
         if (bearerToken != null) {

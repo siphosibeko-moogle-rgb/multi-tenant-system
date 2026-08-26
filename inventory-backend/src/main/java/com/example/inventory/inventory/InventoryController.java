@@ -11,6 +11,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -67,9 +68,29 @@ public class InventoryController {
         this.queries = queries;
     }
 
+    /**
+     * Corrects a balance.
+     *
+     * <p><strong>{@code Idempotency-Key} is honoured from M8.</strong> The
+     * contract has declared the parameter on this path since v1 and the
+     * implementation ignored it, which made CLAUDE.md §4's "any endpoint that
+     * moves stock or money accepts it" true of {@code POST /sales} and false
+     * here. The code was the side that disagreed with the contract.
+     *
+     * <p>It became load-bearing rather than tidy when M8's offline outbox
+     * gained the ability to queue an adjustment: a replay whose first response
+     * was lost to a dropped connection would otherwise post a SECOND movement,
+     * and the ledger is append-only, so the repair is a compensating row
+     * somebody has to notice is needed.
+     *
+     * <p>200 on a replay, 201 on a first post — the same shape
+     * {@code POST /sales} uses, so a client has one rule for both.
+     */
     @PostMapping("/adjustments")
     @PreAuthorize("hasAnyRole('owner', 'manager')")
-    ResponseEntity<StockMovement> adjust(@Valid @RequestBody AdjustmentRequest request) {
+    ResponseEntity<StockMovement> adjust(
+            @Valid @RequestBody AdjustmentRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) UUID idempotencyKey) {
         UUID locationId = request.locationId() != null
                 ? request.locationId()
                 : queries.defaultLocationId().orElseThrow(() -> new ConflictException(
@@ -92,9 +113,11 @@ public class InventoryController {
                 null,
                 null,
                 request.reason(),
-                request.occurredAt()));
+                request.occurredAt()), idempotencyKey);
 
-        return ResponseEntity.status(HttpStatus.CREATED).body(toDto(posted));
+        return ResponseEntity
+                .status(posted.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
+                .body(toDto(posted.movement()));
     }
 
     /**

@@ -2,12 +2,14 @@ package com.example.inventory.inventory;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import java.util.Optional;
 import java.util.UUID;
 
 import javax.sql.DataSource;
 
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -232,6 +234,64 @@ public class StockLedgerService {
         });
     }
 
+    /** A posted movement, and whether this call is the one that posted it. */
+    public record Posted(PostedMovement movement, boolean replayed) {
+    }
+
+    /**
+     * {@link #post} with an idempotency key — the adjustment path M8's offline
+     * outbox replays.
+     *
+     * <p>The contract has declared {@code Idempotency-Key} on
+     * {@code POST /inventory/adjustments} since v1 and the implementation
+     * ignored it until M8, which made CLAUDE.md §4's "any endpoint that moves
+     * stock or money accepts it" true of sales and false here. A stated
+     * convention that is half-implemented is worse than either alternative,
+     * because the statement is what a reader checks instead of the code.
+     *
+     * <p>It stops mattering academically the moment a queued adjustment can be
+     * replayed: a request whose response was lost to a dropped connection is
+     * sent again, and without a key the second attempt is a SECOND movement.
+     * The ledger is append-only (T4), so the fix is another compensating row
+     * that somebody has to notice is needed first.
+     *
+     * <p><strong>Both paths are implemented, and the second is not
+     * redundant</strong> — the same reasoning as {@code SaleService}: two
+     * retries arriving together both find nothing, both insert, and one loses
+     * on {@code stock_movements_idempotency_uq}. Handling only the read would
+     * move stock twice under exactly the conditions a flaky link produces.
+     *
+     * @param clientRequestId may be null, in which case this is an ordinary
+     *                        non-idempotent post and a replay would double-post
+     */
+    public Posted post(MovementRequest request, UUID clientRequestId) {
+        if (clientRequestId == null) {
+            return new Posted(post(request), false);
+        }
+
+        Optional<PostedMovement> existing = findByClientRequestId(clientRequestId);
+        if (existing.isPresent()) {
+            return new Posted(existing.get(), true);
+        }
+
+        try {
+            return new Posted(withAvailableFilledIn(
+                    () -> transactions.execute(status -> postWithin(request, clientRequestId))),
+                    false);
+        } catch (DuplicateKeyException e) {
+            // Lost the race against a concurrent replay of the same key. The
+            // winner's movement is the answer; ours rolled back, so stock moved
+            // exactly once.
+            return new Posted(findByClientRequestId(clientRequestId).orElseThrow(() -> e), true);
+        }
+    }
+
+    private Optional<PostedMovement> findByClientRequestId(UUID clientRequestId) {
+        return jdbc.query("SELECT id FROM stock_movements WHERE client_request_id = ?",
+                        (rs, i) -> rs.getLong("id"), clientRequestId)
+                .stream().findFirst().map(this::readPosted);
+    }
+
     /**
      * Appends one movement inside whatever transaction the caller has already
      * opened, and returns it with the resulting balance.
@@ -251,6 +311,11 @@ public class StockLedgerService {
      * exists to catch.
      */
     public PostedMovement postWithin(MovementRequest request) {
+        return postWithin(request, null);
+    }
+
+    /** @param clientRequestId the idempotency key to stamp on the row; may be null */
+    private PostedMovement postWithin(MovementRequest request, UUID clientRequestId) {
         UUID tenantId = TenantContext.currentTenantId()
                 .orElseThrow(() -> new IllegalStateException(
                         "no tenant bound — a ledger write must run inside a tenant-bound request"));
@@ -258,7 +323,13 @@ public class StockLedgerService {
 
         long id;
         try {
-            id = insert(tenantId, actor, request);
+            id = insert(tenantId, actor, request, clientRequestId);
+        } catch (DuplicateKeyException e) {
+            // The idempotency index, not an oversell. Rethrown unchanged so
+            // post(request, key) can answer it with the winner's movement —
+            // translate() would turn it into an insufficient-stock problem and
+            // report a duplicate request as an empty shelf.
+            throw e;
         } catch (DataAccessException e) {
             throw translate(e, request);
         }
@@ -286,15 +357,20 @@ public class StockLedgerService {
     }
 
     private long insert(UUID tenantId, UUID actor, MovementRequest request) {
+        return insert(tenantId, actor, request, null);
+    }
+
+    private long insert(UUID tenantId, UUID actor, MovementRequest request, UUID clientRequestId) {
         // tenant_id is written from the bound context, which is the same value
         // the RLS policy checks it against. It is never taken from the request —
         // AdjustmentRequest has no field for one (T1).
         return jdbc.queryForObject("""
                 INSERT INTO stock_movements
                     (tenant_id, product_id, location_id, movement_type, quantity_delta,
-                     unit_cost, reference_type, reference_id, reason, occurred_at, created_by)
+                     unit_cost, reference_type, reference_id, reason, occurred_at, created_by,
+                     client_request_id)
                 VALUES (?, ?, ?, ?::movement_type, ?, ?, ?, ?, ?,
-                        COALESCE(?, now()), ?)
+                        COALESCE(?, now()), ?, ?)
                 RETURNING id
                 """, Long.class,
                 tenantId,
@@ -308,7 +384,52 @@ public class StockLedgerService {
                 request.reason(),
                 request.occurredAt() == null ? null : java.sql.Timestamp.from(
                         request.occurredAt().toInstant()),
-                actor);
+                actor,
+                clientRequestId);
+    }
+
+    /**
+     * Rebuilds a {@link PostedMovement} from a row that already exists — the
+     * answer to an idempotent replay.
+     *
+     * <p>{@code balanceAfter} is the balance <em>now</em>, not the balance
+     * immediately after this movement was originally posted. Those differ if
+     * anything moved in between, and now is the honest answer: a client
+     * replaying a request wants to know where the stock actually stands, and
+     * reconstructing a historical balance would mean replaying the ledger to
+     * this row for a number nobody asked for.
+     */
+    private PostedMovement readPosted(long id) {
+        return jdbc.queryForObject("""
+                SELECT m.id, m.product_id, p.name AS product_name, m.location_id,
+                       m.movement_type::text AS movement_type, m.quantity_delta,
+                       m.unit_cost, m.reason, m.occurred_at, m.created_by,
+                       u.full_name AS created_by_name,
+                       COALESCE(ps.quantity_on_hand, 0) AS balance_after
+                FROM stock_movements m
+                JOIN products p
+                     ON p.tenant_id = m.tenant_id AND p.id = m.product_id
+                LEFT JOIN users u
+                     ON u.tenant_id = m.tenant_id AND u.id = m.created_by
+                LEFT JOIN product_stock ps
+                     ON ps.tenant_id = m.tenant_id AND ps.product_id = m.product_id
+                    AND ps.location_id = m.location_id
+                WHERE m.id = ?
+                """,
+                (rs, row) -> new PostedMovement(
+                        rs.getLong("id"),
+                        rs.getObject("product_id", UUID.class),
+                        rs.getString("product_name"),
+                        rs.getObject("location_id", UUID.class),
+                        rs.getString("movement_type"),
+                        rs.getBigDecimal("quantity_delta"),
+                        rs.getBigDecimal("balance_after"),
+                        rs.getBigDecimal("unit_cost"),
+                        rs.getString("reason"),
+                        rs.getObject("occurred_at", OffsetDateTime.class),
+                        rs.getObject("created_by", UUID.class),
+                        rs.getString("created_by_name")),
+                id);
     }
 
     /** The parts of a posted movement that only the database can answer. */

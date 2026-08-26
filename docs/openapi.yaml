@@ -646,6 +646,12 @@ paths:
         Appends an `adjustment` movement. There is deliberately no endpoint to
         set an absolute quantity or to edit a past movement — corrections are
         always new signed rows, so the audit trail cannot be rewritten.
+
+        The `Idempotency-Key` header makes a retry return the original movement
+        rather than posting a second one. Essential for an adjustment captured
+        offline and replayed on reconnect: the ledger is append-only, so a
+        double-post is repaired only by a compensating row somebody has to
+        notice is needed.
       parameters: [ { $ref: '#/components/parameters/IdempotencyKey' } ]
       requestBody:
         required: true
@@ -655,6 +661,11 @@ paths:
       responses:
         '201':
           description: Posted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StockMovement' }
+        '200':
+          description: Idempotent replay of an already-posted adjustment
           content:
             application/json:
               schema: { $ref: '#/components/schemas/StockMovement' }
