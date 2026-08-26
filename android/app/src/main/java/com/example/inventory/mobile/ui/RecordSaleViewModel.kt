@@ -7,6 +7,9 @@ import com.example.inventory.api.models.Product
 import com.example.inventory.api.models.SaleWriteRequest
 import com.example.inventory.api.models.SaleWriteRequestLinesInner
 import com.example.inventory.mobile.net.ApiError
+import com.example.inventory.mobile.offline.Outbox
+import com.example.inventory.mobile.offline.OutboxEntry
+import com.example.inventory.mobile.offline.OutboxOperation
 import com.example.inventory.mobile.net.toApiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.math.BigDecimal
@@ -28,6 +31,7 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class RecordSaleViewModel @Inject constructor(
     private val sales: SalesApi,
+    private val outbox: Outbox,
 ) : ViewModel() {
 
     data class UiState(
@@ -56,6 +60,15 @@ class RecordSaleViewModel @Inject constructor(
          * and retried at 00:02 still belongs to the day it was made.
          */
         val soldAt: OffsetDateTime? = null,
+        /**
+         * The sale was captured with no signal and is waiting in the outbox.
+         *
+         * Distinct from [recordedSaleNumber] on purpose: "saved, will sync" and
+         * "recorded, here is the receipt number" are different promises, and a
+         * cashier told the wrong one either double-sells later or thinks a sale
+         * was lost. There is no sale number yet — the server assigns it.
+         */
+        val queuedOffline: Boolean = false,
     ) {
         val quantityOrNull: BigDecimal?
             get() = quantity.trim().toBigDecimalOrNull()?.takeIf { it > BigDecimal.ZERO }
@@ -144,20 +157,61 @@ class RecordSaleViewModel @Inject constructor(
                     return@launch
                 }
 
+                // If an earlier attempt at THIS sale had been queued — a blip
+                // followed by a successful in-place retry — take it back out.
+                // Leaving it would be harmless to the ledger (the server
+                // recognises the key and answers 200) but would show the
+                // cashier a pending count that never goes down.
+                outbox.remove(requestId)
+
                 _state.value = _state.value.copy(
                     submitting = false,
                     error = null,
+                    queuedOffline = false,
                     recordedSaleNumber = response.body()?.saleNumber ?: "recorded",
                     // Resolved: the next sale gets a fresh key.
                     pendingRequestId = null,
                 )
             } catch (e: Exception) {
-                // A timeout is precisely the case the idempotency key exists for:
-                // the request may have arrived. Keeping the key is what makes the
-                // retry safe.
+                // No HTTP response at all — the phone is offline, or the link
+                // died mid-flight. The sale still happened: goods left the shelf
+                // and money changed hands, and the one unacceptable outcome is
+                // losing that record because there was no signal.
+                //
+                // So it goes to the outbox rather than to an error message, with
+                // the SAME key and the SAME business time this attempt used. A
+                // timeout is precisely the case the key exists for: the request
+                // may well have arrived and only the response was lost, and the
+                // server will recognise the replay as this same sale rather than
+                // recording it twice.
+                outbox.enqueue(
+                    OutboxEntry(
+                        clientRequestId = requestId,
+                        operation = OutboxOperation.SALE,
+                        productId = product.id,
+                        quantity = quantity,
+                        capturedAt = soldAt,
+                    )
+                )
                 _state.value = _state.value.copy(
                     submitting = false,
-                    error = ApiError.fromNetworkFailure(e),
+                    error = null,
+                    queuedOffline = true,
+                    // THE KEY AND THE TIME ARE KEPT, not cleared.
+                    //
+                    // Clearing them was the first cut and it was a regression:
+                    // M3 deliberately holds both across a network failure so
+                    // that Retry resends the SAME sale rather than a new one.
+                    // Dropping them meant a cashier who tapped Retry after a
+                    // blip minted a fresh key, and the queued copy plus the
+                    // retried copy were two different sales to the server —
+                    // double-selling the stock, which is the exact outcome this
+                    // whole feature exists to prevent. Two of M3's own tests
+                    // caught it.
+                    //
+                    // Keeping them costs nothing: the outbox entry carries the
+                    // same key, so whichever of the two gets through first wins
+                    // and the other is recognised as a replay.
                 )
             }
         }

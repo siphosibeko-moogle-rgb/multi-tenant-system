@@ -39,6 +39,8 @@ class RecordSaleViewModelTest {
 
     private lateinit var server: MockWebServer
     private lateinit var viewModel: RecordSaleViewModel
+    private lateinit var outbox: com.example.inventory.mobile.offline.Outbox
+    private lateinit var outboxDirectory: java.io.File
 
     // Every field is now required by the contract, so the fixture has to state
     // them. That is the tightening working: a Product that could be built from
@@ -76,12 +78,17 @@ class RecordSaleViewModelTest {
             .build()
             .create(SalesApi::class.java)
 
-        viewModel = RecordSaleViewModel(api)
+        outboxDirectory = java.nio.file.Files.createTempDirectory("vm-outbox").toFile()
+        outbox = com.example.inventory.mobile.offline.Outbox(
+            java.io.File(outboxDirectory, "pending.log")
+        )
+        viewModel = RecordSaleViewModel(api, outbox)
     }
 
     @After
     fun tearDown() {
         server.shutdown()
+        outboxDirectory.deleteRecursively()
         Dispatchers.resetMain()
     }
 
@@ -161,7 +168,26 @@ class RecordSaleViewModelTest {
         viewModel.save()
         awaitSettled()
 
-        assertNotNull("the failure must be reported", viewModel.state.value.error)
+        // M8 CHANGED WHAT A NETWORK FAILURE MEANS HERE, deliberately.
+        //
+        // This assertion used to be `error != null`. With an outbox the sale is
+        // durably captured on the device the moment the send fails, so nothing
+        // has failed from the cashier's point of view and a red error would be a
+        // lie — one they would dismiss, and then wonder where the sale went.
+        // They are told it is queued instead.
+        //
+        // The test's real subject is unchanged and is asserted below: the key
+        // survives, so the retry is the same sale.
+        assertTrue(
+            "a network failure queues the sale rather than reporting an error",
+            viewModel.state.value.queuedOffline,
+        )
+        assertNull("and it is not an error", viewModel.state.value.error)
+        assertEquals(
+            "the queued copy carries the same key the retry will use",
+            viewModel.state.value.pendingRequestId,
+            outbox.pending().single().clientRequestId,
+        )
         assertNotNull(
             "and the key must be KEPT — dropping it is what would double-record",
             viewModel.state.value.pendingRequestId,
@@ -353,5 +379,80 @@ class RecordSaleViewModelTest {
                 "that is still the same sale",
             viewModel.state.value.pendingRequestId,
         )
+    }
+
+    // ------------------------------------------------------------------
+    // M8: capture with no signal
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `a sale made with the server unreachable is queued, not lost`() {
+        // The backend is simply gone — the airplane-mode case.
+        server.shutdown()
+
+        viewModel.startSale(product)
+        viewModel.setQuantity("3")
+        viewModel.save()
+        awaitSettled()
+
+        val queued = outbox.pending().single()
+
+        // Goods left the shelf and money changed hands. The one unacceptable
+        // outcome is losing that record because there was no signal, and an
+        // error message the cashier dismisses is exactly how it gets lost.
+        assertEquals(product.id, queued.productId)
+        assertEquals(0, BigDecimal("3").compareTo(queued.quantity))
+        assertEquals(
+            com.example.inventory.mobile.offline.OutboxOperation.SALE,
+            queued.operation,
+        )
+
+        // Told plainly that it is saved and pending — NOT given a sale number,
+        // which the server has not assigned, and NOT shown an error.
+        assertTrue("the cashier must be told it is queued", viewModel.state.value.queuedOffline)
+        assertNull("a queued sale is not an error", viewModel.state.value.error)
+        assertNull(
+            "there is no receipt number until the server assigns one",
+            viewModel.state.value.recordedSaleNumber,
+        )
+    }
+
+    @Test
+    fun `the queued sale carries the key and time the ViewModel is still holding`() {
+        server.shutdown()
+
+        viewModel.startSale(product)
+        viewModel.setQuantity("2")
+        viewModel.save()
+        awaitSettled()
+
+        val queued = outbox.pending().single()
+
+        // THE property the whole offline story rests on, and the reason the
+        // ViewModel keeps its key rather than clearing it once queued: the
+        // in-place Retry and the queued replay must be the SAME sale to the
+        // server. Two different keys would double-sell the stock, and nobody
+        // would notice until someone counted the shelf.
+        assertEquals(viewModel.state.value.pendingRequestId, queued.clientRequestId)
+        assertEquals(viewModel.state.value.soldAt, queued.capturedAt)
+    }
+
+    @Test
+    fun `queueing the same unsent sale twice leaves one entry`() {
+        server.shutdown()
+
+        viewModel.startSale(product)
+        viewModel.setQuantity("1")
+        viewModel.save()
+        awaitSettled()
+        val first = outbox.pending().single().clientRequestId
+
+        // Tapping save again on a sheet that has already queued must not create
+        // a second sale. The key is the identity of the operation.
+        viewModel.save()
+        awaitSettled()
+
+        assertEquals(1, outbox.size())
+        assertEquals(first, outbox.pending().single().clientRequestId)
     }
 }
