@@ -150,10 +150,12 @@ class FlywayBindingTest {
         // V5 (sale_returns), V6 (partially_refunded_status), V7
         // (sale_numbering), V8 (po_numbering), V9
         // (demand_rollup_and_naive_baseline), V10
-        // (forecast_accuracy_uniqueness) and V11 (recommendation_urgency)
-        // added with the migrations that introduced them.
+        // (forecast_accuracy_uniqueness), V11 (recommendation_urgency),
+        // V12 (change_log) and V13 (adjustment_idempotency) added with the
+        // migrations that introduced them.
         assertThat(versions)
-                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11",
+                        "12", "13");
     }
 
     @Test
