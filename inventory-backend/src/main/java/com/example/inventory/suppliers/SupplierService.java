@@ -1,6 +1,7 @@
 package com.example.inventory.suppliers;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -73,5 +74,44 @@ public class SupplierService {
                 (UUID) s[0], (String) s[1], (String) s[2], (String) s[3], (String) s[4],
                 (Integer) s[5], (BigDecimal) s[6], (Boolean) s[7], (String) s[8], (String) s[9],
                 observed, productCount));
+    }
+
+    /**
+     * Suppliers by id, for {@code GET /sync/changes}.
+     *
+     * <p>Soft-deleted rows are excluded here and reach the client as tombstones
+     * instead — {@code change_log} already records the deletion, so a row that
+     * vanishes from this result is one the sync feed reports as deleted rather
+     * than one it silently drops.
+     *
+     * <p>No {@code WHERE tenant_id = ?}: RLS applies one on this connection and
+     * a second is the convenience clause T2 warns about (T2).
+     */
+    public List<SupplierDtos.Supplier> findAllByIds(List<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        // Explicit placeholders rather than `= ANY(?)`: binding a UUID[] needs
+        // Connection.createArrayOf and driver-specific handling, and the
+        // failure mode of getting it subtly wrong is a query that matches
+        // nothing — which here would look exactly like "nothing changed".
+        String placeholders = String.join(",", java.util.Collections.nCopies(ids.size(), "?"));
+        return jdbc.query("""
+                SELECT id, name, contact_name, email, phone, lead_time_days,
+                       min_order_value, is_active
+                FROM suppliers
+                WHERE id IN (%s) AND deleted_at IS NULL
+                ORDER BY name
+                """.formatted(placeholders),
+                (rs, i) -> new SupplierDtos.Supplier(
+                        rs.getObject("id", UUID.class),
+                        rs.getString("name"),
+                        rs.getString("contact_name"),
+                        rs.getString("email"),
+                        rs.getString("phone"),
+                        rs.getInt("lead_time_days"),
+                        rs.getBigDecimal("min_order_value"),
+                        rs.getBoolean("is_active")),
+                ids.toArray());
     }
 }

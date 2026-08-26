@@ -1318,10 +1318,28 @@ paths:
       tags: [Sync]
       summary: Everything that changed since a watermark
       description: |
-        Lets the app keep a local Room cache warm without refetching the
-        catalog. Returns tombstones for deletions and a new `syncToken`.
+        Lets the app keep a local cache warm without refetching the catalog.
+        Returns tombstones for deletions and a new `syncToken`.
         Sales created offline are pushed back through POST /sales with a
         `clientRequestId`, so replays are safe.
+
+        **`syncToken` is opaque and is not a timestamp.** It encodes a position
+        in a transaction-id clock, so it never ties, never moves backwards, and
+        cannot loop. Store it verbatim and pass it back as `since`; do not parse
+        it, compare two of them, or try to construct one. A token the server
+        cannot read is answered with 400, and the recovery is to omit `since`
+        and resynchronise from scratch.
+
+        **Apply `deleted` as well as the upserts.** A product deleted while a
+        device was offline stays sellable on that device until its tombstone is
+        applied.
+
+        **When `hasMore` is true, call again immediately** with the new token
+        rather than waiting for the next sync interval — otherwise a large
+        backlog drains one page per interval.
+
+        Available to every role. It carries no sales, money, cost or margin; the
+        report endpoints are owner/manager because they do.
       parameters:
         - name: since
           in: query
@@ -1334,7 +1352,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [syncToken, hasMore, products, categories, suppliers, stock, deleted]
+                required: [syncToken, hasMore, products, categories, suppliers, locations, stock, deleted]
                 properties:
                   syncToken: { type: string }
                   hasMore: { type: boolean }
@@ -1347,8 +1365,20 @@ paths:
                   suppliers:
                     type: array
                     items: { $ref: '#/components/schemas/Supplier' }
+                  # Added in M8. The feed shipped without locations, which made
+                  # it impossible for an offline client to know which locations
+                  # exist -- and a sale needs one. StockStatus carries
+                  # locationId and locationName, so the names leaked in through
+                  # stock rows, but only for products that happened to change.
+                  locations:
+                    type: array
+                    items: { $ref: '#/components/schemas/Location' }
                   stock:
                     type: array
+                    description: |
+                      Every location's row for any product whose stock moved.
+                      Keyed on product rather than on the (product, location)
+                      pair, because a tombstone carries one id.
                     items: { $ref: '#/components/schemas/StockStatus' }
                   deleted:
                     type: array
@@ -1356,7 +1386,9 @@ paths:
                       type: object
                       required: [entityType, id]
                       properties:
-                        entityType: { type: string }
+                        entityType:
+                          type: string
+                          enum: [product, category, supplier, location, stock]
                         id: { type: string, format: uuid }
 
 components:

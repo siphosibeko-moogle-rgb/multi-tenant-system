@@ -92,7 +92,13 @@ class TenantIsolationTest extends AbstractIntegrationTest {
             // end-of-milestone tidy-up, because a table that misses this sweep
             // breaks nothing and stays uncovered until someone reads another
             // tenant's row in production.
-            "sale_returns");
+            "sale_returns",
+            // V12. The sync feed's change log. It needs this sweep more than
+            // most: it is an INDEX OF EVERY ENTITY IN THE TENANT, so a policy
+            // failure here does not leak one table's rows — it hands a caller
+            // the id of every product, category, supplier and location every
+            // other business on the deployment owns, in one request.
+            "change_log");
 
     private static final UUID TENANT_A = newTenantId();
     private static final UUID TENANT_B = newTenantId();

@@ -43,7 +43,10 @@ class SchemaSmokeTest extends AbstractIntegrationTest {
             // end-of-milestone tidy-up, because a table that misses this sweep
             // breaks nothing and stays uncovered until someone reads another
             // tenant's row in production.
-            "sale_returns");
+            "sale_returns",
+            // V12 — the sync feed's change log. See TenantIsolationTest for why
+            // this particular table is the worst one to leave uncovered.
+            "change_log");
 
     @Autowired
     private JdbcTemplate jdbc;

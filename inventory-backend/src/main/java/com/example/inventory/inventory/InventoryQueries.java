@@ -193,6 +193,55 @@ public class InventoryQueries {
     }
 
     /**
+     * Every location's stock row for the given products, for
+     * {@code GET /sync/changes}.
+     *
+     * <p>Reads {@code v_stock_status} — the same view {@link #stock} pages over
+     * — so the sync feed and the Stock screen cannot disagree about a product's
+     * state. Mirroring the view's CASE here instead would be the third instance
+     * of the bug CLAUDE.md §5 keeps recording.
+     *
+     * <p>Returns <em>all</em> locations for each product because
+     * {@code change_log} keys stock changes on {@code product_id} alone —
+     * V12 explains why (the contract's tombstone carries one uuid, and
+     * {@code product_stock} is keyed on a pair). Over-fetching a multi-location
+     * tenant's other rows is correct; guessing which half of the key changed
+     * would not be.
+     */
+    public List<StockStatus> stockForProducts(List<UUID> productIds) {
+        if (productIds.isEmpty()) {
+            return List.of();
+        }
+        String placeholders = String.join(",",
+                java.util.Collections.nCopies(productIds.size(), "?"));
+        return jdbc.query("""
+                SELECT s.product_id, s.sku, s.name, s.location_id, l.name AS location_name,
+                       s.quantity_on_hand, ps.quantity_reserved, s.quantity_available,
+                       s.effective_reorder_point, s.stock_state, s.days_of_cover,
+                       ps.updated_at
+                FROM v_stock_status s
+                JOIN locations l ON l.id = s.location_id
+                JOIN product_stock ps
+                     ON ps.product_id = s.product_id AND ps.location_id = s.location_id
+                WHERE s.product_id IN (%s)
+                ORDER BY s.sku, s.product_id, s.location_id
+                """.formatted(placeholders), (rs, i) -> new StockStatus(
+                        rs.getObject("product_id", UUID.class),
+                        rs.getString("sku"),
+                        rs.getString("name"),
+                        rs.getObject("location_id", UUID.class),
+                        rs.getString("location_name"),
+                        rs.getBigDecimal("quantity_on_hand"),
+                        rs.getBigDecimal("quantity_reserved"),
+                        rs.getBigDecimal("quantity_available"),
+                        rs.getBigDecimal("effective_reorder_point"),
+                        rs.getString("stock_state"),
+                        rs.getBigDecimal("days_of_cover"),
+                        rs.getObject("updated_at", OffsetDateTime.class)),
+                productIds.toArray());
+    }
+
+    /**
      * Rebuilds a product's balance from the ledger.
      *
      * <p>Exists so {@code product_stock} can be checked against the rows it is

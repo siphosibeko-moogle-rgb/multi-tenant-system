@@ -109,7 +109,11 @@ class LoginRoleTest extends AbstractIntegrationTest {
             // end-of-milestone tidy-up, because a table that misses this sweep
             // breaks nothing and stays uncovered until someone reads another
             // tenant's row in production.
-            "sale_returns");
+            "sale_returns",
+            // V12 — the sync feed's change log. The login role authenticates a
+            // user and nothing else; a role that could read this could
+            // enumerate every entity id in every tenant on the deployment.
+            "change_log");
 
     private static final UUID TENANT = newTenantId();
     private static final String EMAIL = "login-probe-" + UUID.randomUUID() + "@example.test";

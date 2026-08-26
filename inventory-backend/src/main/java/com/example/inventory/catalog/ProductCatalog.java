@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -332,6 +333,65 @@ public class ProductCatalog {
     // ------------------------------------------------------------------
     // Categories and locations
     // ------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // Bulk reads by id, for GET /sync/changes
+    // ------------------------------------------------------------------
+    //
+    // These reuse PRODUCT_COLUMNS and the same row mappers the ordinary
+    // endpoints use, rather than sync-shaped copies. A copy is a second
+    // definition of what a product is, and this codebase has now been bitten
+    // three times by two definitions of one thing drifting apart (CLAUDE.md §5)
+    // — most recently by GET /products and GET /inventory disagreeing about
+    // stockState because their INPUTS diverged while the expressions matched.
+    //
+    // Soft-deleted rows are excluded. That is not a silent drop: change_log has
+    // already recorded the deletion, so a row missing from these results is one
+    // the sync feed reports as a tombstone instead.
+
+    /** @return the caller's products among {@code ids}, deleted ones omitted */
+    public List<Product> findAllByIds(List<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+        return jdbc.query(PRODUCT_COLUMNS + " WHERE p.id IN (" + placeholders + ")"
+                        + " AND p.deleted_at IS NULL" + PRODUCT_GROUP_BY,
+                        ProductCatalog::mapProduct, ids.toArray());
+    }
+
+    public List<Category> findCategoriesByIds(List<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+        return jdbc.query("""
+                SELECT c.id, c.name, c.parent_id,
+                       (SELECT count(*) FROM products p
+                         WHERE p.category_id = c.id AND p.deleted_at IS NULL) AS product_count
+                FROM categories c WHERE c.id IN (%s) ORDER BY c.name
+                """.formatted(placeholders), (rs, i) -> new Category(
+                        rs.getObject("id", UUID.class),
+                        rs.getString("name"),
+                        rs.getObject("parent_id", UUID.class),
+                        rs.getLong("product_count")), ids.toArray());
+    }
+
+    public List<Location> findLocationsByIds(List<UUID> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        String placeholders = String.join(",", Collections.nCopies(ids.size(), "?"));
+        return jdbc.query("""
+                SELECT id, name, address, is_default, is_active FROM locations
+                WHERE id IN (%s) ORDER BY is_default DESC, name
+                """.formatted(placeholders), (rs, i) -> new Location(
+                        rs.getObject("id", UUID.class),
+                        rs.getString("name"),
+                        rs.getString("address"),
+                        rs.getBoolean("is_default"),
+                        rs.getBoolean("is_active")), ids.toArray());
+    }
 
     public List<Category> categories() {
         return jdbc.query("""

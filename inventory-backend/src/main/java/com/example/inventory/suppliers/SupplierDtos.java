@@ -19,6 +19,27 @@ public final class SupplierDtos {
      *                    marks the field nullable for exactly this reason.
      *                    Left null rather than guessed at.
      */
+    /**
+     * The contract's {@code Supplier} — the shape {@code SupplierDetail}
+     * composes with {@code allOf}, without the two fields that cost a query
+     * each.
+     *
+     * <p>Added for {@code GET /sync/changes}, which carries suppliers in bulk.
+     * {@code SupplierDetail} would mean two extra round trips per supplier
+     * (observed lead time, product count) to populate fields the contract does
+     * not put in the sync feed at all.
+     */
+    public record Supplier(
+            UUID id,
+            String name,
+            String contactName,
+            String email,
+            String phone,
+            Integer leadTimeDays,
+            BigDecimal minOrderValue,
+            boolean isActive) {
+    }
+
     public record ObservedLeadTime(
             BigDecimal averageDays,
             BigDecimal stddevDays,
