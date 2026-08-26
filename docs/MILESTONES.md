@@ -689,8 +689,9 @@ be marked incomplete for its absence.
 **Done when**
 - [x] Valuation `asOf` a past date matches a manual replay of the ledger to that date
 - [x] A sale captured with no connectivity syncs on reconnect and is
-recorded exactly once — verified against a live backend, **but not yet on a
-device in airplane mode**; see "What is verified, and what is not" below
+recorded exactly once — verified against a live backend. **One manual check
+is still outstanding: airplane mode on a device.** It is five minutes and the
+steps are written out below under "One manual check outstanding".
 - [x] Report endpoints stay under ~500 ms against a tenant with 100k movements
 
 ### Sync and the offline outbox — done
@@ -705,12 +706,22 @@ transaction-id clock, never a timestamp**:
 | with a page limit | a tenant writing densely enough to fill a page with one timestamp never advances the watermark — it loops forever, silently |
 | any clock | NTP, leap smearing and a restored replica all move `now()` backwards |
 
-A monotonic id fixes those and is still **not sufficient**, which is the part
-worth understanding:
+A monotonic id fixes those three and is still **not sufficient**. This is the
+part that gets "simplified" away, so here is the counterexample in full — the
+same words as `docs/adr/sync.md` §1 and `V12__change_log.sql`, duplicated
+verbatim on purpose so that whichever file a reader opens first, they meet it:
 
-> Transaction A takes id 100. B takes 101. **B commits first.** A sync in
-> between sees `max(id) = 101`, stores 101, returns B's row. A then commits at
-> 100 — below the watermark — and is never delivered. Nothing errors.
+> Transaction A takes id 100. Transaction B takes id 101. **B commits first.**
+> A sync running in between sees `max(id) = 101`, hands the client a token of
+> 101, and returns B's row. Then A commits. A's row has id 100, which is below
+> the client's watermark, so it is never sent. The row is lost forever and
+> nothing anywhere reports an error.
+
+**Do not replace the watermark with a timestamp or with a plain sequence.**
+Both look correct, both pass every test that does not run two overlapping
+transactions, and both fail exactly as above: one row, never delivered, no
+error. The failure surfaces as "that one device shows stale data" weeks later,
+which is not a report anyone traces back to a sync cursor.
 
 So the boundary is `pg_snapshot_xmin(pg_current_snapshot())`, the oldest
 still-running transaction, not `max(xact_id)`. The interval is half-open
@@ -775,14 +786,38 @@ sync 3 (same token)    -> stock 1 (LIVE-FIXTURE, onHand 7)  (nothing missed)
                           token advanced to v1:4717:0
 ```
 
+### ⚠ One manual check outstanding — airplane mode on a device
+
 **Not verified: airplane mode on a device.** The loop was exercised through the
 real `Outbox` and `OutboxReplayer` classes against a real server, which covers
-the mechanism — but nobody tapped Sell on a handset with the radio off. An
-emulator and a `Pixel_7` AVD are present; what is missing is UI automation,
-and adding Espresso is a dependency decision nobody has taken. This is the same
-class of gap as M3's two device-unconfirmed criteria, and it is recorded here
-rather than quietly counted as done: CLAUDE.md §16 exists because the emulator
-found four things 150 tests did not.
+the mechanism — but nobody tapped Sell on a handset with the radio off. This is
+the same class of gap as M3's two device-unconfirmed criteria, and it is
+recorded rather than quietly counted as done: CLAUDE.md §16 exists because the
+emulator found four things 150 tests did not.
+
+**This is a five-minute check, not a milestone.** Do not add Espresso for it —
+that is a real dependency decision and it has not been taken; automating one
+manual check is not a good enough reason to take it.
+
+Run it once, by hand, before M8 is called fully done:
+
+1. Start the backend and install the debug build on the emulator (a `Pixel_7`
+   AVD already exists) or on a handset.
+2. Sign in, then put the device in **airplane mode**.
+3. Record a sale. Expect: *"Saved — will sync"*, no error, and no receipt
+   number (the server has not assigned one yet).
+4. Re-enable networking.
+5. Confirm the sale syncs and that stock has moved **exactly once** —
+   check the product's `quantityOnHand` before and after, or
+   `SELECT count(*), count(DISTINCT client_request_id) FROM sales WHERE …`,
+   which must be equal.
+
+What would make it fail, and is therefore what the check is actually for: a
+sale queued but never replayed, a sale replayed into two rows, or a stock
+level that moved twice. All three are silent — none produces an error on the
+screen or in the log — which is exactly why a human has to look once.
+
+Tick this item here when it has been run.
 
 ### The four report endpoints — done
 

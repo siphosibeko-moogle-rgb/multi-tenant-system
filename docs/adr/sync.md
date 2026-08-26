@@ -46,6 +46,21 @@ exactly the same hole:
 > the client's watermark, so it is never sent. The row is lost forever and
 > nothing anywhere reports an error.
 
+**Do not replace the watermark with a timestamp or with a plain sequence.**
+Both look correct, both pass every test that does not run two overlapping
+transactions, and both fail exactly as above: one row, never delivered, no
+error. It surfaces as "that one device shows stale data" weeks later, which is
+not a report anyone traces back to a sync cursor.
+
+This counterexample is repeated **verbatim** in `docs/MILESTONES.md` M8 and in
+`V12__change_log.sql`'s header. The duplication is deliberate rather than
+drift: it is the argument most likely to be discarded by someone who never saw
+it being made, so it sits in all three places a reader might start from. If you
+change one, change all three — noting that V12 is an applied migration, so
+editing it changes its Flyway checksum and is forbidden by T9. In practice
+that means the ADR and MILESTONES are the two that can move, and V12's copy is
+fixed for good.
+
 The fix is to refuse to hand out a watermark past any transaction that might
 still be in flight. `pg_snapshot_xmin(pg_current_snapshot())` is exactly that
 number: the oldest transaction still running. Everything below it has committed
