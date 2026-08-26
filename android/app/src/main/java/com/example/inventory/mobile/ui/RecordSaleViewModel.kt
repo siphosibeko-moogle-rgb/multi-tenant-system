@@ -8,6 +8,7 @@ import com.example.inventory.api.models.SaleWriteRequest
 import com.example.inventory.api.models.SaleWriteRequestLinesInner
 import com.example.inventory.mobile.net.ApiError
 import com.example.inventory.mobile.offline.Outbox
+import com.example.inventory.mobile.offline.OutboxCoordinator
 import com.example.inventory.mobile.offline.OutboxEntry
 import com.example.inventory.mobile.offline.OutboxOperation
 import com.example.inventory.mobile.net.toApiError
@@ -32,6 +33,7 @@ import kotlinx.coroutines.launch
 class RecordSaleViewModel @Inject constructor(
     private val sales: SalesApi,
     private val outbox: Outbox,
+    private val coordinator: OutboxCoordinator,
 ) : ViewModel() {
 
     data class UiState(
@@ -172,6 +174,19 @@ class RecordSaleViewModel @Inject constructor(
                     // Resolved: the next sale gets a fresh key.
                     pendingRequestId = null,
                 )
+
+                // A sale just reached the server, which is the strongest
+                // evidence available that connectivity is back — so drain
+                // anything captured while it was not. Costs nothing when the
+                // queue is empty, which it usually is: replayAll() makes no
+                // requests at all in that case.
+                //
+                // This is one of the only two things that make the outbox
+                // drain. Without it the queue fills and never empties, which is
+                // exactly how this shipped before OutboxCoordinator existed:
+                // every replay test called replayAll() itself, so nothing
+                // noticed the app never did.
+                coordinator.syncNow()
             } catch (e: Exception) {
                 // No HTTP response at all — the phone is offline, or the link
                 // died mid-flight. The sale still happened: goods left the shelf
@@ -193,6 +208,7 @@ class RecordSaleViewModel @Inject constructor(
                         capturedAt = soldAt,
                     )
                 )
+                coordinator.refreshPendingCount()
                 _state.value = _state.value.copy(
                     submitting = false,
                     error = null,

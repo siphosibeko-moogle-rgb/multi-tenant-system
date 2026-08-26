@@ -37,6 +37,7 @@ fun SignedInApp(
     role: String?,
     tenantName: String,
     onSignOut: () -> Unit,
+    outboxCoordinator: com.example.inventory.mobile.offline.OutboxCoordinator,
 ) {
     val tabs = tabsFor(role)
     var selected by remember(role) { mutableStateOf(Tab.HOME) }
@@ -53,6 +54,21 @@ fun SignedInApp(
         if (selected !in tabs) {
             selected = Tab.HOME
         }
+    }
+
+    // Drain anything captured while there was no signal.
+    //
+    // This is the reconnect trigger: entering the signed-in app covers a cold
+    // start after the process was killed, which is the shape "the phone was off
+    // all afternoon" actually takes. The other trigger is a successful sale
+    // (RecordSaleViewModel) — together they are the ONLY two things that make
+    // the outbox drain.
+    //
+    // Safe unconditionally: an empty queue sends nothing, and a failure defers
+    // rather than discarding, so this does not need to know whether the network
+    // is up. It cannot reliably find out anyway.
+    LaunchedEffect(Unit) {
+        outboxCoordinator.syncNow()
     }
 
     Scaffold(

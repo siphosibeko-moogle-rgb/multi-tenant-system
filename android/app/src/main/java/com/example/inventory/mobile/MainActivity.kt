@@ -49,6 +49,14 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var session: SessionManager
 
+    /**
+     * Injected here rather than obtained inside a composable, so the one thing
+     * that drains the offline queue on reconnect is visible at the top of the
+     * activity instead of hidden three screens down.
+     */
+    @Inject
+    lateinit var outboxCoordinator: com.example.inventory.mobile.offline.OutboxCoordinator
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -88,6 +96,7 @@ class MainActivity : ComponentActivity() {
                                 role = signedIn.role,
                                 tenantName = signedIn.tenantName,
                                 onSignOut = { session.signOut() },
+                                outboxCoordinator = outboxCoordinator,
                             )
                         }
                     }

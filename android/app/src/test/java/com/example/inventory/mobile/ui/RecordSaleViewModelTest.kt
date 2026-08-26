@@ -72,17 +72,32 @@ class RecordSaleViewModelTest {
         server = MockWebServer()
         server.start()
 
-        val api = Retrofit.Builder()
+        val retrofit = Retrofit.Builder()
             .baseUrl(server.url("/api/v1/"))
             .addConverterFactory(MoshiConverterFactory.create(Serializer.moshi))
             .build()
-            .create(SalesApi::class.java)
+        val api = retrofit.create(SalesApi::class.java)
 
         outboxDirectory = java.nio.file.Files.createTempDirectory("vm-outbox").toFile()
         outbox = com.example.inventory.mobile.offline.Outbox(
             java.io.File(outboxDirectory, "pending.log")
         )
-        viewModel = RecordSaleViewModel(api, outbox)
+        // A real coordinator over the same outbox, because the ViewModel now
+        // triggers a drain after a successful sale. A stub would hide whether
+        // that call happens at all — which is the wiring gap
+        // RecordingASaleDrainsTheOutboxTest exists to catch.
+        viewModel = RecordSaleViewModel(
+            api,
+            outbox,
+            com.example.inventory.mobile.offline.OutboxCoordinator(
+                outbox,
+                com.example.inventory.mobile.offline.OutboxReplayer(
+                    outbox,
+                    api,
+                    retrofit.create(com.example.inventory.api.apis.InventoryApi::class.java),
+                ),
+            ),
+        )
     }
 
     @After

@@ -182,6 +182,44 @@ recorded, and the cashier has already handed over goods — so it is removed fro
 the queue **and surfaced**. Retrying forever would hide it; dropping it
 silently would lose the record of money taken.
 
+### Something has to call the replayer — and for a while nothing did
+
+`OutboxReplayer` was written, wired into Hilt, and covered by twenty-four
+tests. Every one of them called `replayAll()` **itself**. Nothing in the app
+ever did. A sale captured with no signal was queued durably, correctly, with
+the right idempotency key — and would have sat there forever. Every test was
+green and the feature did not work.
+
+That is CLAUDE.md §5's pipeline rule recurring for the third time in this
+codebase, after M7's `recomputeAll()` never calling `DemandRollupJob` and the
+`stockState` disagreement:
+
+> A pipeline whose stages are each tested with the previous stage's output
+> already provided has no test of the wiring between them. Ask of any
+> multi-stage job: *does anything exercise stage N without stage N−1 being
+> done by hand first?*
+
+It was found by writing out the manual airplane-mode procedure and noticing
+that step 4 — "re-enable networking" — had nothing to connect it to step 5.
+
+`OutboxCoordinator` is the fix, with exactly two triggers: **entering the
+signed-in app** (covers a cold start after the process was killed, which is
+what "the phone was off all afternoon" actually looks like) and **a sale
+recording successfully** (the strongest available evidence that connectivity
+is back, and free when the queue is empty).
+
+`RecordingASaleDrainsTheOutboxTest` is the test that closes it, and it lives by
+one rule: **it never calls `replayAll()` or `syncNow()`.** It queues an entry,
+drives the ViewModel the way a cashier does, and asserts the queue drained.
+Adding a manual drain to its fixture would restore the exact blind spot it
+exists to close — the same discipline `RecomputeRunsTheRollupTest` follows.
+Mutation-verified: deleting the `coordinator.syncNow()` call turns it red.
+
+Deliberately **not** a `ConnectivityManager` callback or a `WorkManager` job.
+The first fires on transitions that are frequently wrong (a captive portal is
+"connected"); the second is a dependency decision nobody has taken. Both are
+reasonable later, and neither is needed to make a queued sale reach the server.
+
 ### Attempts are counted, never capped
 
 An entry leaves the queue because the server accepted it, or because the server
