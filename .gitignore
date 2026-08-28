@@ -1,4 +1,5 @@
 # --- Build output -----------------------------------------------------------
+
 target/
 build/
 out/
@@ -7,21 +8,29 @@ out/
 *.class
 
 # Keep the Maven wrapper jar: it is how ./mvnw bootstraps on a clean checkout.
+
 !.mvn/wrapper/maven-wrapper.jar
 
 # Same for the Gradle wrapper jar, and for the same reason: ./gradlew IS this
+
 # jar plus a shell script, so without it a clean checkout fails immediately with
+
 # "Unable to access jarfile .../gradle-wrapper.jar" — before it can download
+
 # anything that would fix the problem.
+
 #
+
 # The `*.jar` rule above is what swallowed it. That rule is right for build
+
 # output and wrong for the two jars that are source, so both are named here
+
 # explicitly rather than the rule being loosened.
+
 !android/gradle/wrapper/gradle-wrapper.jar
 
 # --- Eclipse ----------------------------------------------------------------
-# Workspace state, not project source. Two workspaces exist in this tree
-# (multi-tenant-system/.metadata and inventory-platform/.metadata).
+
 .metadata/
 .recommenders/
 .apt_generated/
@@ -30,36 +39,46 @@ out/
 .sts4-cache/
 
 # Eclipse per-project files. These carry machine-specific paths and a Java 17
+
 # compliance setting that contradicts the Java 21 the build targets, so they
+
 # are deliberately not shared.
+
 .project
 .classpath
 .settings/
 
 # --- IntelliJ IDEA ----------------------------------------------------------
+
 .idea/
 *.iml
 *.iws
 *.ipr
 
 # --- VS Code ----------------------------------------------------------------
+
 .vscode/
 
 # --- NetBeans ---------------------------------------------------------------
+
 nbproject/private/
 nbbuild/
 nbdist/
 .nb-gradle/
 
 # --- Gradle (android/) ------------------------------------------------------
+
 .gradle/
 local.properties
 android/.cxx/
 captures/
 
 # --- Secrets and local overrides --------------------------------------------
+
 # No credentials are committed. Real values come from the environment; see the
+
 # README. These patterns exist so a local override cannot be added by accident.
+
 .env
 .env.*
 !.env.example
@@ -71,18 +90,19 @@ application-local.properties
 application-secret*.yml
 
 # --- OS ---------------------------------------------------------------------
+
 .DS_Store
 Thumbs.db
 *.swp
 *~
 
 # --- Logs and temp ----------------------------------------------------------
+
 *.log
 logs/
 tmp/
 
 # --- Claude Code local state ------------------------------------------------
-.claude/settings.local.json
-.claude/settings.local.json.tmp.*
-.claude/worktrees/
+
+.claude/
 CLAUDE.md
