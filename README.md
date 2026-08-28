@@ -3,8 +3,7 @@
 A multi-tenant inventory management platform for SMEs. Many separate businesses
 share one deployment, and each one's data is invisible to every other.
 
-See [CLAUDE.md](CLAUDE.md) for the architecture invariants and
-[docs/MILESTONES.md](docs/MILESTONES.md) for the delivery plan.
+See docs/MILESTONES.md for the delivery plan.
 
 ## Layout
 
