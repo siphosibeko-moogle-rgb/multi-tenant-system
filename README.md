@@ -10,7 +10,7 @@ See [CLAUDE.md](CLAUDE.md) for the architecture invariants and
 
 ```
 multi-tenant-system/
-├── CLAUDE.md                 architecture invariants — read first
+
 ├── README.md
 ├── docker-compose.yml        PostgreSQL 16 for local development
 ├── inventory-backend/        Spring Boot 4.1, Java 21 — the whole product
