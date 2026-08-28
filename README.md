@@ -27,7 +27,7 @@ multi-tenant-system/
 | Tool | Version | Notes |
 |------|---------|-------|
 | JDK | 21 | The Boot 4.1 parent defaults to 17, so the build sets 21 explicitly. |
-| Docker | running daemon | Required for both the local database and the tests. There is no H2 fallback — see CLAUDE.md T10. |
+| Docker | running daemon | Required for both the local database and the tests. . |
 | Maven | none needed | Use the bundled `./mvnw`. |
 
 Check the daemon is up before anything else:
